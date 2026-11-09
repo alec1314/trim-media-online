@@ -1,0 +1,14 @@
+appname               = trim-media-online
+version               = @VERSION@
+display_name          = trim-media-online
+desc                  = 给飞牛影视增加在线能力的第三方扩展（基于 fnmedia-ext 改造）：媒体库首页注入豆瓣热门榜单四库 + 资源站海量分类四库（无限滚动、点开即播），原生搜索聚合苹果 CMS 资源站在线影视，用飞牛自带播放器直接播放；零侵入、完全可逆。本项目不内置任何资源站线路，接口由使用者自行配置。
+platform              = all
+source                = thirdparty
+maintainer            = trim-media-online
+maintainer_url        = https://github.com/your-github-username/trim-media-online
+os_min_version        = 1.2.0
+install_dep_apps      = trim.media
+desktop_uidir         = ui
+desktop_applaunchname = trim-media-online.main
+checkport             = false
+micro_app             = true

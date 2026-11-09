@@ -1,0 +1,22 @@
+{
+    ".url": {
+        "trim-media-online.main": {
+            "title": "在线扩展管理",
+            "desc": "在线资源 / 搜索播放 / 播放记录",
+            "icon": "images/icon_{0}.png",
+            "type": "iframe",
+            "protocol": "http",
+            "port": "",
+            "url": "/app/trim-media-online/",
+            "allUsers": false,
+            "gatewaySocket": "trim-media-online.sock",
+            "gatewayPrefix": "/app/trim-media-online",
+            "control": {
+                "accessPerm": "readonly",
+                "portPerm": "hidden",
+                "pathPerm": "hidden",
+                "fullUrlPerm": "hidden"
+            }
+        }
+    }
+}

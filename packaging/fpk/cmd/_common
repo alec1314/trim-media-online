@@ -1,0 +1,17 @@
+#!/bin/bash
+# trim-media-online 应用中心生命周期脚本的共享辅助（被 source）。
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TMO_APP_ROOT="$(cd "${SELF_DIR}/.." && pwd)"
+TMO_REPO_DIR=""
+for _cand in "${TRIM_APPDEST:-}/repo" "${TMO_APP_ROOT}/target/repo" "${TMO_APP_ROOT}/repo"; do
+  if [ -n "${_cand}" ] && [ -f "${_cand}/deploy/install.sh" ]; then
+    TMO_REPO_DIR="$(cd "${_cand}" && pwd)"; break
+  fi
+done
+unset _cand
+TMO_LOG="${TRIM_PKGVAR:-/tmp}/trim-online-app.log"
+mkdir -p "$(dirname "${TMO_LOG}")" 2>/dev/null || true
+tmo_fail() {
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "$1" > "${TRIM_TEMP_LOGFILE}" 2>/dev/null || true
+  echo "[trim-media-online] $1" >&2; exit 1
+}
