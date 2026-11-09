@@ -954,6 +954,33 @@ def _should_online(q: str) -> bool:
 
 # ------------------------------------------------------------- 在线热门媒体库
 
+# 网盘播放地址特征：本服务 pan 代理根相对路径 + 常见网盘 CDN/分享域名。
+# （上游 fnmedia-ext 的 pan 模块在本构建中被裁剪，此处仅保留识别能力，
+#  用于线路排序与海报 ☁角标；无网盘线路时恒返回 None，不影响在线线。）
+_PAN_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("夸克网盘", re.compile(r"quark\.cn|quark-cdn", re.I)),
+    ("UC网盘", re.compile(r"\buc\.cn|drive\.uc\.cn|uc-cdn", re.I)),
+    ("阿里网盘", re.compile(r"alipan\.com|aliyundrive\.com", re.I)),
+    ("天翼网盘", re.compile(r"cloud\.189\.cn", re.I)),
+    ("百度网盘", re.compile(r"pan\.baidu\.com|baidupcs\.com", re.I)),
+    ("115网盘", re.compile(r"\b115\.com|115cdn", re.I)),
+    ("移动云盘", re.compile(r"caiyun\.139\.com", re.I)),
+    ("迅雷云盘", re.compile(r"pan\.xunlei\.com|xlpans", re.I)),
+)
+
+
+def _pan_match(url: str) -> dict | None:
+    """识别网盘播放地址：命中返回 {"name": 网盘名}，否则 None。"""
+    if not url:
+        return None
+    if "/v/api/ext/pan/" in url:
+        return {"name": "网盘"}
+    for name, pat in _PAN_PATTERNS:
+        if pat.search(url):
+            return {"name": name}
+    return None
+
+
 def _brief_line_flags(brief: dict) -> tuple[str, int | None, set]:
     """扫描 brief 的所有线路，返回 (网盘名标注, 最优健康等级, 网盘源key集合)。
 
