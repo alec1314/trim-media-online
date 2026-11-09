@@ -347,6 +347,17 @@ async def search_all(keyword: str, sources=None) -> list[OnlineTitle]:
     return titles
 
 
+def source_priority(source: dict, overrides: dict | None = None) -> int:
+    """源优先级权重（越大越优先，热门资源分组排序用）。
+
+    返回管理台配置的覆盖值（-100..100），未配置默认 0。
+    """
+    try:
+        return int((overrides or {}).get((source or {}).get("id"), 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def detail_source(source: dict, vod_id: str) -> OnlineTitle | None:
     """同步取详情（带缓存由调用方做）。"""
     import requests  # 仅 PoC；主代理内用 httpx 异步版
