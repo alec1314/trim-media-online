@@ -1,5 +1,23 @@
 # 更新日志（trim-media-online）
 
+## 1.4.0（2026-11-09）
+
+### 新增
+
+- **弹幕（ASS 字幕轨）**：对接自建 [danmu_api](https://github.com/huangxd-/danmu_api)
+  （弹弹play 兼容接口），按片名 + `SxxEyy` 匹配剧集，把弹幕生成 ASS 字幕轨注入播放链。
+  利用飞牛 Web / TV 播放器内置的 JASSUB（libass）渲染 `\move` 滚动弹幕，不修改播放器、
+  不另起播放页。
+  - 字幕菜单显示「弹幕」，支持自动选中、手动切换；顶部/底部弹幕、颜色、简单防重叠车道均保留；
+  - 管理台「弹幕」页配置接口地址、Token、自动加载、时间偏移、条数上限，并提供连接测试；
+  - 弹幕内容缓存 6 小时、失败负缓存 10 分钟；接口超时/未匹配只返回空字幕，不影响正片；
+  - 不内置任何弹幕服务；需使用者自行部署 danmu_api 并自行确认内容合法性。
+
+### 兼容性
+
+- 新增 `proxy/danmu.py` 与配置键 `danmu_enabled` / `danmu_api` / `danmu_token` /
+  `danmu_auto` / `danmu_offset` / `danmu_limit`；默认关闭，旧配置自动兼容。
+
 ## 1.3.0（2026-11-09）
 
 ### 修复

@@ -72,6 +72,14 @@ DEFAULTS = {
     "lunatv_auto_disable": True,     # 连续两轮测速失败自动禁用
     # 每源最近测速结果：id -> {ok, ms, fails, at}（供管理台展示与连续失败计数）
     "lunatv_sync_stats": {},
+    # 弹幕：对接自建 danmu_api（弹弹play 兼容）。弹幕转 ASS 字幕轨，由播放器
+    # 自带的外挂字幕渲染；不内置任何弹幕服务。
+    "danmu_enabled": False,
+    "danmu_api": "",
+    "danmu_token": "",
+    "danmu_auto": True,        # 打开播放页自动选中「弹幕」字幕
+    "danmu_offset": 0.0,       # 时间偏移（秒），正值让弹幕更晚出现
+    "danmu_limit": 800,        # 单集最多渲染条数（按时间均匀抽样）
 }
 
 # 已废弃、需从旧配置里清除的键

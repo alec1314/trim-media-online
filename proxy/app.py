@@ -40,6 +40,7 @@ import config as cfgmod
 from config import config
 import charts as chartmod
 from charts import chart_cache
+import danmu
 import catalog as catalogmod
 from catalog import catalog
 import history as histmod
@@ -308,20 +309,22 @@ async def resolve_chart_by_media(mg: str) -> dict | None:
     return None
 
 
-def _instant_play_response(mg: str, body_video_guid: str = ""):
+def _instant_play_response(mg: str, body_video_guid: str = "", og: str = ""):
     """榜单源尚未绑定时的瞬时播放返回：先把播放器带进加载页，真正匹配延后到 preset。"""
     play_link = f"{ONLINE_PREFIX}/{mg}/preset.m3u8?index=0"
+    _ds = _danmu_stream(mg, og or chart_guid_by_media(mg), 0)
+    _sub_guid = _ds["guid"] if (_ds and int(_ds.get("is_default") or 0)) else ""
     return JSONResponse({"code": 0, "msg": "", "data": {
         "audio_guid": "", "audio_index": -1, "hls_time": 6,
         "is_subtitle_external": 0, "media_guid": mg,
-        "play_link": play_link, "subtitle_guid": "", "subtitle_index": -1,
+        "play_link": play_link, "subtitle_guid": _sub_guid, "subtitle_index": -1,
         "subtitle_link": "", "video_guid": body_video_guid or vg_for(mg),
         "video_index": 0, "wrapper": "HLS",
         "non_fatal_errno": None, "video_encoder": "",
         "not_supported_resolution": "", "supported_highest_resolution": ""}})
 
 
-def _instant_stream_payload(mg: str):
+def _instant_stream_payload(mg: str, og: str = ""):
     """与 _instant_play_response 配套：只返回最小可播元数据，绝不等待搜源。"""
     f = {
         "guid": mg, "path": "在线/加载中.m3u8", "file_name": "加载中.m3u8",
@@ -343,15 +346,19 @@ def _instant_stream_payload(mg: str):
         "create_time": 0, "update_time": 0, "rotation": 0, "ext1": 0,
         "is_bluray": False,
     }
+    _subs = []
+    _ds = _danmu_stream(mg, og or chart_guid_by_media(mg), 0)
+    if _ds:
+        _subs.append(_ds)
     return {
         "files": [f], "video_streams": [v], "audio_streams": [],
-        "subtitle_streams": [], "qualities": [], "cloud_storage_info": None,
+        "subtitle_streams": _subs, "qualities": [], "cloud_storage_info": None,
     }
 
 
-def _instant_stream_response(mg: str):
+def _instant_stream_response(mg: str, og: str = ""):
     return JSONResponse({"code": 0, "msg": "",
-                         "data": _instant_stream_payload(mg)})
+                         "data": _instant_stream_payload(mg, og)})
 
 
 def _no_source_response():
@@ -1524,7 +1531,7 @@ async def stream_list(guid: str, request: Request):
             start_resolve_chart(guid)
             _PENDING_MEDIA_CHART[media_guid(guid)] = guid
             return JSONResponse({"code": 0, "msg": "",
-                                 "data": _instant_stream_payload(media_guid(guid))})
+                                 "data": _instant_stream_payload(media_guid(guid), guid)})
         if not brief:
             return await forward_upstream(request)
         sl = inj.stream_list(brief)
@@ -1545,6 +1552,9 @@ async def stream_list(guid: str, request: Request):
     _dur = _known_duration(_vs.get("media_guid", ""), history.get(guid))
     if _dur:
         _vs["duration"] = _dur
+    _ds = _danmu_stream(_vs.get("media_guid", ""), guid, _dur, target)
+    if _ds:
+        sl["subtitle_streams"] = list(sl.get("subtitle_streams") or []) + [_ds]
     # 打开详情/线路菜单即后台预热默认线路播放列表（单飞，真正取 main 时并入）
     if target:
         try:
@@ -1750,6 +1760,49 @@ def _known_duration(mg: str, rec: dict | None = None) -> int:
     return dur
 
 
+def _danmu_stream(mg: str, og: str, duration: int = 0,
+                  target: dict | None = None,
+                  auto: bool | None = None) -> dict | None:
+    """构造一条「弹幕」ASS 外挂字幕轨；未启用或无法识别标题时返回 None。"""
+    if not mg or not danmu.enabled():
+        return None
+    try:
+        if target:
+            brief = store.get_title_by_guid(target.get("online_guid") or og) or {}
+            title = target.get("title") or inj._f(brief, "title")
+            is_ep = target.get("kind") == "episode" or bool(target.get("ep_guid"))
+            cat = "tv" if (is_ep or (brief and inj.is_tv(brief))) else "movie"
+            return danmu.make_stream(
+                mg, target.get("online_guid") or og, title,
+                str(brief.get("year") or ""), cat, duration=duration,
+                auto=auto, ep_title=target.get("ep_title") or "")
+        brief = store.get_title_by_guid(og)
+        if brief:
+            return danmu.make_stream(
+                mg, og, inj._f(brief, "title"),
+                str(inj._f(brief, "year") or ""),
+                "tv" if inj.is_tv(brief) else "movie",
+                duration=duration, auto=auto)
+        meta = chart_cache.get_guid(og) or {}
+        if meta.get("title"):
+            return danmu.make_stream(
+                mg, og, meta.get("title", ""), str(meta.get("year") or ""),
+                "movie" if meta.get("cat") == "movie" else "tv",
+                duration=duration, auto=auto)
+    except Exception:
+        return None
+    return None
+
+
+def _attach_info_danmu(info: dict, target: dict | None = None) -> None:
+    """把弹幕轨的 guid 写进 play/info，让播放器默认选中「弹幕」字幕。"""
+    og = (target or {}).get("online_guid") or info.get("guid") or ""
+    st = _danmu_stream(info.get("media_guid") or "", og,
+                       int(info.get("duration") or 0), target)
+    if st and int(st.get("is_default") or 0):
+        info["subtitle_guid"] = st["guid"]
+
+
 def _apply_duration(info: dict, dur: int) -> dict:
     """把总时长写进 play/info（客户端用 item.duration 夹取续播 ts）。"""
     dur = int(dur or 0)
@@ -1796,7 +1849,9 @@ def _online_play_info(guid: str, request: Request) -> dict | None:
         rec0 = history.get(guid)
         if rec0:
             info["ts"] = rec0.get("ts", 0)
-        return _apply_duration(info, _known_duration(info.get("media_guid", ""), rec0))
+        _apply_duration(info, _known_duration(info.get("media_guid", ""), rec0))
+        _attach_info_danmu(info, ep)
+        return info
     brief = store.get_title_by_guid(guid)
     if not brief:
         return None
@@ -1810,13 +1865,17 @@ def _online_play_info(guid: str, request: Request) -> dict | None:
                 if ep:
                     info = inj.episode_play_info(ep)
                     info["ts"] = resume_ts
-                    return _apply_duration(
+                    _apply_duration(
                         info, _known_duration(info.get("media_guid", ""),
                                               history.get(target_eg)))
+                    _attach_info_danmu(info, ep)
+                    return info
     info = inj.play_info(brief)
     if rec:
         info["ts"] = rec.get("ts", 0)
-    return _apply_duration(info, _known_duration(info.get("media_guid", ""), rec))
+    _apply_duration(info, _known_duration(info.get("media_guid", ""), rec))
+    _attach_info_danmu(info)
+    return info
 
 
 @app.post("/v/api/v1/play/info")
@@ -1851,6 +1910,7 @@ async def play_info(request: Request):
         _apply_duration(info, dur)
         if dur:
             history.set_duration(guid, dur)
+        _attach_info_danmu(info, ep)
         _prewarm_from_info(info)
         return JSONResponse({"code": 0, "msg": "",
                              "data": clientmod.normalize_detail(info, client)})
@@ -1891,6 +1951,7 @@ async def play_info(request: Request):
                 },
                 "direct_link_audio_index": -1,
             }
+            _attach_info_danmu(info)
             return JSONResponse({"code": 0, "msg": "",
                                  "data": clientmod.normalize_detail(info, client)})
     if not brief:
@@ -1906,6 +1967,7 @@ async def play_info(request: Request):
     _apply_duration(info, dur)
     if dur:
         history.set_duration(ig, dur)
+    _attach_info_danmu(info)
     _prewarm_from_info(info)
     return JSONResponse({"code": 0, "msg": "",
                          "data": clientmod.normalize_detail(info, client)})
@@ -2004,7 +2066,7 @@ async def stream_post(request: Request):
         # 网页播放器会在进入播放页前连续请求 stream；这里必须瞬时返回，不能等待搜源，
         # 否则三个请求串起来仍会把用户留在海报墙。真实匹配推迟到播放器请求 preset。
         start_resolve_chart(chart_guid_by_media(mg))
-        return _instant_stream_response(mg)
+        return _instant_stream_response(mg, chart_guid_by_media(mg))
     if not target:
         return await forward_upstream(request)
     if target.get("kind") == "episode":
@@ -2022,9 +2084,13 @@ async def stream_post(request: Request):
     _dur = _known_duration(mg, history.get(target.get("ep_guid") or target.get("online_guid", "")))
     if _dur:
         v["duration"] = _dur
+    _subs = []
+    _ds = _danmu_stream(mg, target.get("online_guid", ""), _dur, target)
+    if _ds:
+        _subs.append(_ds)
     return JSONResponse({"code": 0, "msg": "", "data": {
         "file_stream": f, "video_stream": v,
-        "audio_streams": [], "subtitle_streams": [],
+        "audio_streams": [], "subtitle_streams": _subs,
         "qualities": quals, "cloud_storage_info": None}})
 
 
@@ -2083,7 +2149,8 @@ async def play_play(request: Request):
         # 未绑定榜单片：play/play 也立即返回占位 HLS，播放器先进入加载页；
         # preset/main 请求时再等待后台匹配，避免 play/info+stream+play 串行等待。
         start_resolve_chart(chart_guid_by_media(mg))
-        return _instant_play_response(mg, body.get("video_guid", ""))
+        return _instant_play_response(mg, body.get("video_guid", ""),
+                                      chart_guid_by_media(mg))
     if not base_target:
         return await forward_upstream(request)
     # 播放器「清晰度/线路」菜单切换时会带我们编码的 bitrate，据此选线路
@@ -2119,14 +2186,29 @@ async def play_play(request: Request):
             pass
     else:
         play_link = f"{ONLINE_PREFIX}/{mg}/direct?{q}"
+    _ds = _danmu_stream(mg, target.get("online_guid", ""),
+                        _known_duration(mg, history.get(
+                            target.get("ep_guid") or target.get("online_guid", ""))),
+                        target)
+    _sub_guid = _ds["guid"] if (_ds and int(_ds.get("is_default") or 0)) else ""
     return JSONResponse({"code": 0, "msg": "", "data": {
         "audio_guid": "", "audio_index": -1, "hls_time": 6,
         "is_subtitle_external": 0, "media_guid": mg,
-        "play_link": play_link, "subtitle_guid": "", "subtitle_index": -1,
+        "play_link": play_link, "subtitle_guid": _sub_guid, "subtitle_index": -1,
         "subtitle_link": "", "video_guid": body.get("video_guid", vg_for(mg)),
         "video_index": 0, "wrapper": wrapper,
         "non_fatal_errno": None, "video_encoder": "",
         "not_supported_resolution": "", "supported_highest_resolution": ""}})
+
+
+@app.get("/v/api/v1/subtitle/dl/{guid}")
+async def subtitle_dl(guid: str, request: Request):
+    """播放器外挂字幕内容入口：弹幕 guid 返回 ASS 文本，其余透传官方。"""
+    if danmu.is_danmu_guid(guid):
+        text = await danmu.ass_for(guid)
+        return Response(text, media_type="text/plain; charset=utf-8",
+                        headers={"Cache-Control": "no-store"})
+    return await forward_upstream(request)
 
 
 @app.get(f"{ONLINE_PREFIX}/{{mg}}/direct")
@@ -3988,6 +4070,14 @@ async def ext_status(request: Request):
             "catalog": catalog.status()}
 
 
+@app.post("/v/api/ext/danmu/test")
+async def ext_danmu_test(request: Request):
+    body = await request.json()
+    res = await danmu.test(str(body.get("api") or ""), str(body.get("token") or ""))
+    return {"code": 0 if res.get("ok") else 400,
+            "msg": res.get("msg", ""), "data": res}
+
+
 @app.post("/v/api/ext/source/priority")
 async def ext_source_priority(request: Request):
     body = await request.json()
@@ -4070,8 +4160,23 @@ async def ext_set_config(request: Request):
         "line_fastest_prefer", "line_autofail",
         "lunatv_sync_enabled", "lunatv_sync_preset", "lunatv_sync_url",
         "lunatv_sync_interval", "lunatv_auto_disable",
+        "danmu_enabled", "danmu_api", "danmu_token", "danmu_auto",
+        "danmu_offset", "danmu_limit",
     }
     patch = {k: v for k, v in body.items() if k in allowed}
+    if "danmu_api" in patch:
+        patch["danmu_api"] = str(patch["danmu_api"]).strip()[:300]
+    if "danmu_token" in patch:
+        patch["danmu_token"] = str(patch["danmu_token"]).strip()[:120]
+    if "danmu_offset" in patch:
+        patch["danmu_offset"] = max(-60.0, min(60.0,
+                                               float(patch["danmu_offset"] or 0)))
+    if "danmu_limit" in patch:
+        patch["danmu_limit"] = max(100, min(3000, int(patch["danmu_limit"])))
+    if "danmu_enabled" in patch:
+        patch["danmu_enabled"] = bool(patch["danmu_enabled"])
+    if "danmu_auto" in patch:
+        patch["danmu_auto"] = bool(patch["danmu_auto"])
     if "hot_library_title" in patch:
         patch["hot_library_title"] = str(patch["hot_library_title"]).strip()[:20] or HOT_DEFAULT_TITLE
     if "hot_limit" in patch:

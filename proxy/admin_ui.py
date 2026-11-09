@@ -179,6 +179,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
       <button class="nav-item" data-page="quality">片源质量</button>
       <button class="nav-item" data-page="sources">资源站</button>
       <button class="nav-item" data-page="importsub">订阅同步</button>
+      <button class="nav-item" data-page="danmu">弹幕</button>
       <button class="nav-item" data-page="search">搜索</button>
       <button class="nav-item" data-page="about">关于</button>
     </nav>
@@ -384,6 +385,46 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
 
 
 
+    <!-- ============ 弹幕 ============ -->
+    <section class="page" id="page-danmu">
+      <h2 class="page-title">弹幕</h2>
+      <p class="page-desc">把 <a href="https://github.com/huangxd-/danmu_api" target="_blank" rel="noopener">danmu_api</a> 提供的弹幕转成 ASS 字幕轨，走飞牛播放器自带的外挂字幕渲染。本项目不内置、不代理任何弹幕服务。</p>
+
+      <div class="card">
+        <div class="card-title">弹幕接口</div>
+        <label class="switch-row"><input type="checkbox" id="danmuEnabled"/>
+          <span>启用弹幕<span class="sub">关闭后不再生成弹幕字幕轨，播放完全不受影响</span></span></label>
+        <label class="switch-row"><input type="checkbox" id="danmuAuto"/>
+          <span>自动加载弹幕<span class="sub">进入播放页默认选中「弹幕」字幕；关闭后可在字幕菜单手动选择</span></span></label>
+        <label class="field"><span>接口地址</span>
+          <input type="text" id="danmuApi" placeholder="http://192.168.1.10:9321"/></label>
+        <label class="field" style="max-width:360px"><span>接口 Token<span class="muted" style="font-weight:400">（默认 87654321 可留空）</span></span>
+          <input type="text" id="danmuToken" placeholder="87654321"/></label>
+        <div class="row">
+          <label class="field" style="max-width:180px"><span>时间偏移（秒）</span>
+            <input type="number" id="danmuOffset" min="-60" max="60" step="0.5" style="width:100%"/></label>
+          <label class="field" style="max-width:180px"><span>最多弹幕条数</span>
+            <input type="number" id="danmuLimit" min="100" max="3000" step="100" style="width:100%"/></label>
+        </div>
+        <div class="btn-row">
+          <button class="primary small" onclick="saveDanmu()">保存弹幕设置</button>
+          <button class="small" onclick="testDanmu()">测试连接</button>
+        </div>
+        <div id="danmuMsg" class="muted sm" style="margin-top:6px"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">使用说明</div>
+        <div class="stack sm muted" style="line-height:1.7">
+          <div>· 先自行部署 danmu_api，例如：<code>docker run -d -p 9321:9321 -e TOKEN=87654321 --name danmu-api logvar/danmu-api:latest</code></div>
+          <div>· 地址填 <code>http://NAS地址:9321</code>；使用默认 Token 时留空即可，自定义 Token 后需填写。</div>
+          <div>· 播放时字幕菜单会出现「弹幕」；无匹配或接口超时只会显示空字幕，不影响正片播放。</div>
+          <div>· 按片名 + SxxEyy 自动匹配，冷门片或命名不规范的片源可能匹配不到；可用时间偏移校准。</div>
+          <div>· 弹幕依赖播放器的 ASS 外挂字幕能力（Web 端内置 libass）；TV 端与手机端以实际表现为准。</div>
+        </div>
+      </div>
+    </section>
+
     <!-- ============ 搜索 ============ -->
     <section class="page" id="page-search">
       <h2 class="page-title">搜索设置</h2>
@@ -495,6 +536,7 @@ async function switchPage(page){
   if(page==="quality")renderQuality();
   if(page==="sources"){try{loadHealth();}catch(e){}try{loadLunaStatus();}catch(e){}}
   if(page==="importsub"){try{if(!CFG)await loadStatus();}catch(e){}try{if(typeof initSubProxy==="function")initSubProxy();}catch(e){}try{loadLunaStatus();}catch(e){}}
+  if(page==="danmu"){try{if(!CFG)await loadStatus();}catch(e){}initDanmu();}
   if(page==="about"){}
 }
 $$("[data-page]").forEach(b=>b.addEventListener("click",()=>switchPage(b.dataset.page)));
@@ -929,6 +971,37 @@ async function saveLines(){
   const r=await jpost("/v/api/ext/config",body);
   if(r.code===0){toast("已保存");Object.assign(CFG,body);}else toast("保存失败 "+r.msg,"fail");
 }
+function initDanmu(){
+  if(!CFG)return;
+  $("danmuEnabled").checked=!!CFG.danmu_enabled;
+  $("danmuAuto").checked=CFG.danmu_auto!==false;
+  $("danmuApi").value=CFG.danmu_api||"";
+  $("danmuToken").value=CFG.danmu_token||"";
+  $("danmuOffset").value=CFG.danmu_offset==null?0:CFG.danmu_offset;
+  $("danmuLimit").value=CFG.danmu_limit||800;
+}
+async function saveDanmu(){
+  const body={danmu_enabled:$("danmuEnabled").checked,
+    danmu_auto:$("danmuAuto").checked,
+    danmu_api:$("danmuApi").value.trim(),
+    danmu_token:$("danmuToken").value.trim(),
+    danmu_offset:Math.max(-60,Math.min(60,parseFloat($("danmuOffset").value)||0)),
+    danmu_limit:Math.max(100,Math.min(3000,parseInt($("danmuLimit").value)||800))};
+  const r=await jpost("/v/api/ext/config",body);
+  if(r.code===0){
+    toast("已保存");Object.assign(CFG,body);
+    $("danmuMsg").textContent=(body.danmu_enabled&&body.danmu_api)
+      ?"已启用，下次进入播放页生效。":"已保存（未启用或未填写接口地址）。";
+  }else toast("保存失败 "+(r.msg||""),"fail");
+}
+async function testDanmu(){
+  const m=$("danmuMsg");m.textContent="测试中…";
+  try{
+    const r=await jpost("/v/api/ext/danmu/test",
+      {api:$("danmuApi").value.trim(),token:$("danmuToken").value.trim()});
+    m.textContent=(r.data&&r.data.msg)||r.msg||"完成";
+  }catch(e){m.textContent="测试失败："+e;}
+}
 async function loadOnline(){
   const kw=$("kw").value.trim();
   const r=await jget("/v/api/ext/online?limit=500"+(kw?("&q="+encodeURIComponent(kw)):""));
@@ -958,7 +1031,7 @@ async function init(){
   $("lineAutofail").checked=CFG.line_autofail!==false;
   $("fastestMax").value=CFG.line_fastest_max||6;
   $("fastestTimeout").value=CFG.line_fastest_timeout||4;
-  renderKw();renderSources();
+  renderKw();renderSources();initDanmu();
   try{loadLunaStatus();}catch(e){}
   const gs=$("globalState");gs.textContent="接管运行中 · 已缓存 "+STATUS.cached_titles;gs.className="dot ok";
   const ed=$("aboutEdition");if(ed)ed.textContent=(FEAT_DDUO?"完整版（本地全功能）":"公开版")+" · 在飞牛原生搜索与媒体库中注入在线影视";
