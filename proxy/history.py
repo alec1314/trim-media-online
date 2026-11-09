@@ -87,6 +87,19 @@ class History:
             self._flush_locked()
         return True
 
+    def set_duration(self, item_guid: str, duration: int):
+        """补齐总时长（清单 EXTINF 算出后回填），不改变 last-watched 排序。"""
+        duration = int(duration or 0)
+        if not duration:
+            return
+        with _LOCK:
+            rec = self._rec.get(item_guid)
+            if not rec or int(rec.get("duration", 0) or 0) == duration:
+                return
+            rec["duration"] = duration
+            self._dirty = True
+            self._flush_locked(force=True)
+
     def set_position(self, item_guid: str, ts: int, duration: int = 0):
         with _LOCK:
             prev = self._rec.get(item_guid, {})

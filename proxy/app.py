@@ -1541,6 +1541,10 @@ async def stream_list(guid: str, request: Request):
         sl["video_streams"][0]["bps"] = quals[0]["bitrate"]
         sl["qualities"] = quals
         sl["cloud_storage_info"] = None
+    _vs = sl["video_streams"][0]
+    _dur = _known_duration(_vs.get("media_guid", ""), history.get(guid))
+    if _dur:
+        _vs["duration"] = _dur
     # 打开详情/线路菜单即后台预热默认线路播放列表（单飞，真正取 main 时并入）
     if target:
         try:
@@ -1738,6 +1742,47 @@ async def favorite_list(request: Request):
     return JSONResponse(ldata)
 
 
+def _known_duration(mg: str, rec: dict | None = None) -> int:
+    """已知的媒体总时长（秒）：优先进度记录里的 duration，其次清单 EXTINF 缓存。"""
+    dur = int((rec or {}).get("duration") or 0)
+    if dur <= 0 and mg:
+        dur = int(_DURATION_BY_MG.get(mg, 0) or 0)
+    return dur
+
+
+def _apply_duration(info: dict, dur: int) -> dict:
+    """把总时长写进 play/info（客户端用 item.duration 夹取续播 ts）。"""
+    dur = int(dur or 0)
+    info["duration"] = dur
+    item = info.get("item")
+    if isinstance(item, dict):
+        item["duration"] = dur
+        if dur and not item.get("runtime"):
+            item["runtime"] = max(1, int(round(dur / 60.0)))
+    return info
+
+
+async def _ensure_duration(mg: str, rec: dict | None, request: Request) -> int:
+    """续播场景下取真实时长：缓存缺失时最多等 2.5s 拉一次清单补齐。"""
+    dur = _known_duration(mg, rec)
+    if dur > 0 or not mg:
+        return dur
+    picked = _pick_episode(mg, request)
+    if not picked:
+        return 0
+    # 只等已有的单飞任务，且用 shield 防止超时取消它——该 Future 与播放器随后
+    # 取 main.m3u8 的请求共用，被取消会让正常播放收到 CancelledError。
+    _warm_playlist(mg, picked, request)
+    await asyncio.sleep(0)  # 让预热协程先登记单飞 Future
+    fut = _PLAYLIST_FUT.get(_playlist_cache_key(picked))
+    if fut is not None and not fut.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(fut), timeout=2.5)
+        except Exception:
+            pass
+    return _known_duration(mg, rec)
+
+
 def _online_play_info(guid: str, request: Request) -> dict | None:
     """对已绑定的在线标题（brief）构造原生播放 info。
 
@@ -1751,7 +1796,7 @@ def _online_play_info(guid: str, request: Request) -> dict | None:
         rec0 = history.get(guid)
         if rec0:
             info["ts"] = rec0.get("ts", 0)
-        return info
+        return _apply_duration(info, _known_duration(info.get("media_guid", ""), rec0))
     brief = store.get_title_by_guid(guid)
     if not brief:
         return None
@@ -1765,11 +1810,13 @@ def _online_play_info(guid: str, request: Request) -> dict | None:
                 if ep:
                     info = inj.episode_play_info(ep)
                     info["ts"] = resume_ts
-                    return info
+                    return _apply_duration(
+                        info, _known_duration(info.get("media_guid", ""),
+                                              history.get(target_eg)))
     info = inj.play_info(brief)
     if rec:
         info["ts"] = rec.get("ts", 0)
-    return info
+    return _apply_duration(info, _known_duration(info.get("media_guid", ""), rec))
 
 
 @app.post("/v/api/v1/play/info")
@@ -1798,6 +1845,12 @@ async def play_info(request: Request):
         info = inj.episode_play_info(ep)
         if rec:
             info["ts"] = rec.get("ts", 0)
+        dur = _known_duration(info.get("media_guid", ""), rec)
+        if dur <= 0 and int(info.get("ts") or 0) > 0:
+            dur = await _ensure_duration(info.get("media_guid", ""), rec, request)
+        _apply_duration(info, dur)
+        if dur:
+            history.set_duration(guid, dur)
         _prewarm_from_info(info)
         return JSONResponse({"code": 0, "msg": "",
                              "data": clientmod.normalize_detail(info, client)})
@@ -1845,6 +1898,14 @@ async def play_info(request: Request):
     info = _online_play_info(guid, request)
     if info is None:
         return await forward_upstream(request)
+    ig = info.get("guid", "")
+    dur = _known_duration(info.get("media_guid", ""), history.get(ig))
+    if dur <= 0 and int(info.get("ts") or 0) > 0:
+        dur = await _ensure_duration(info.get("media_guid", ""),
+                                     history.get(ig), request)
+    _apply_duration(info, dur)
+    if dur:
+        history.set_duration(ig, dur)
     _prewarm_from_info(info)
     return JSONResponse({"code": 0, "msg": "",
                          "data": clientmod.normalize_detail(info, client)})
@@ -1941,6 +2002,9 @@ async def stream_post(request: Request):
         # 默认选中第一条线路，让播放器初始分辨率/码率与之一致
         v["resolution_type"] = quals[0]["resolution"]
         v["bps"] = quals[0]["bitrate"]
+    _dur = _known_duration(mg, history.get(target.get("ep_guid") or target.get("online_guid", "")))
+    if _dur:
+        v["duration"] = _dur
     return JSONResponse({"code": 0, "msg": "", "data": {
         "file_stream": f, "video_stream": v,
         "audio_streams": [], "subtitle_streams": [],
@@ -2175,6 +2239,14 @@ async def play_record(request: Request):
         body = {}
     ig = body.get("item_guid", "")
     if store.get_title_by_guid(ig) or store.get_episode(ig):
+        # 客户端只在能算出时长时才带 duration；缺失时用清单 EXTINF 结果补齐，
+        # 否则「继续观看」无法按 duration 夹取 ts。
+        if not int(float(body.get("duration") or 0)):
+            d = _DURATION_BY_MG.get(body.get("media_guid", ""), 0)
+            if d:
+                body["duration"] = d
+        _log.info("play/record %s ts=%s dur=%s keys=%s", ig,
+                  body.get("ts"), body.get("duration"), sorted(body))
         # 记录在线播放进度到本地（继续观看），不上报官方库
         history.record(body)
         return JSONResponse({"code": 0, "msg": "", "data": True})
@@ -2974,6 +3046,9 @@ _PLAYLIST_CACHE: dict[str, tuple[float, str]] = {}
 _PLAYLIST_TTL = 600.0
 # 单飞：同一「集+线路」只允许一次在途抓取，预热与真正取 main 共用同一个 Future
 _PLAYLIST_FUT: dict[str, asyncio.Future] = {}
+# 媒体总时长（秒，按 mg）：从上游清单 EXTINF 求和。客户端续播会用
+# item.duration 夹取 ts（ts>duration 时归零），没有真实时长就无法续播。
+_DURATION_BY_MG: dict[str, int] = {}
 
 # 紧凑分片注册表：夸克/UC 转码 HLS 的签名分片 URL 极长（~600 字符，base64 后近千），
 # 一部 90 分钟的片子上千分片会撑出 1MB+ 的清单，且每个分片 URL 超长，经外网网关
@@ -3053,6 +3128,17 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
                     picked["url"] = fresh
     if text is None:
         return None, None
+
+    # 记录媒体总时长：EXTINF 累加。播放器用 play/info 的 item.duration 夹取续播点，
+    # 为 0 会导致任何 ts>0 都被归零（表现为“不记忆上次观看节点”）。
+    if "#EXTINF" in text:
+        try:
+            _total = sum(float(m.group(1)) for m in
+                         re.finditer(r"#EXTINF:\s*([0-9.]+)", text))
+            if _total > 0:
+                _DURATION_BY_MG[mg] = int(_total)
+        except Exception:
+            pass
 
     sel_qs = ""
     if picked.get("line"):
