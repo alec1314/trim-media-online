@@ -39,7 +39,7 @@ https://站点地址/api.php/provide/vod/at/json
 
 ## 下载安装
 
-1. 打开 [Releases](https://github.com/your-github-username/trim-media-online/releases)，下载最新的 `trim-media-online-<version>.fpk`。
+1. 打开 [Releases](https://github.com/alec1314/trim-media-online/releases)，下载最新的 `trim-media-online-<version>.fpk`。
 2. 在 fnOS **应用中心 → 手动安装 FPK** 中选择该文件，安装向导需勾选同意《免责声明》。
 3. 选择应用安装所在存储卷，保持依赖应用 **影视 (trim.media)** 为运行状态。
 4. 安装完成后启用「trim-media-online」，桌面/应用内会出现 **在线扩展管理**。
@@ -108,7 +108,7 @@ state/              config.json / titles.json / history.json（运行时生成�
 ## 从源码构建 FPK
 
 ```
-git clone https://github.com/your-github-username/trim-media-online.git
+git clone https://github.com/alec1314/trim-media-online.git
 cd trim-media-online
 bash packaging/fpk/build.sh
 # 产物：dist/trim-media-online-<version>.fpk（附 .sha256）
