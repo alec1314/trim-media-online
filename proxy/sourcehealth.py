@@ -36,13 +36,35 @@ def _blank() -> dict:
             "last_ok": 0.0, "last_fail": 0.0, "dead_until": 0.0}
 
 
+def canonical(key: str | None) -> str:
+    """把同一源的不同写法归一到源 id。
+
+    搜索路径记录的是 ``src:<id>``，播放路径记录的是 ``<id>``（线路名前缀）。
+    两者必须合并，否则管理页会出现同一源两行、且名称对不上。
+    """
+    k = (key or "").strip()
+    if k.startswith("src:"):
+        k = k[4:]
+    return k
+
+
 def _load() -> dict:
     try:
         with open(_STATE_PATH, "r", encoding="utf-8") as f:
             d = json.load(f)
-        return d if isinstance(d, dict) else {}
     except Exception:
         return {}
+    if not isinstance(d, dict):
+        return {}
+    # 迁移旧数据：src:<id> 与 <id> 合并为一条，保留样本更多的那条
+    out: dict[str, dict] = {}
+    for k, v in d.items():
+        if not isinstance(v, dict):
+            continue
+        ck = canonical(k)
+        if ck not in out or v.get("n", 0) > out[ck].get("n", 0):
+            out[ck] = v
+    return out
 
 
 _STATS: dict[str, dict] = _load()
@@ -73,7 +95,7 @@ def source_key_of(line: str | None, picked: dict | None = None) -> str:
 
 
 def record(key: str, ok: bool, latency: float = 0.0) -> None:
-    key = (key or "").strip()
+    key = canonical(key)
     if not key:
         return
     now = time.time()
@@ -103,6 +125,7 @@ def record(key: str, ok: bool, latency: float = 0.0) -> None:
 
 
 def stats(key: str) -> dict:
+    key = canonical(key)
     with _LOCK:
         s = _STATS.get(key)
         if not s:
@@ -121,6 +144,7 @@ def stats(key: str) -> dict:
 
 
 def is_dead(key: str, now: float | None = None) -> bool:
+    key = canonical(key)
     now = now if now is not None else time.time()
     with _LOCK:
         s = _STATS.get(key)
@@ -154,6 +178,7 @@ def _grade(s: dict, now: float) -> int:
 
 def weight(key: str, now: float | None = None) -> tuple:
     """排序权重，元组越小越优先：健康等级 → 平均延迟 → 成功率。无画像给中性值。"""
+    key = canonical(key)
     now = now if now is not None else time.time()
     with _LOCK:
         s = _STATS.get(key)
@@ -176,6 +201,7 @@ def ordered(keys, now: float | None = None) -> list:
 def display_grade(key: str, now: float | None = None):
     """海报/UI 角标用等级：无任何统计样本时返回 None（不显示点），
     避免给从未探测过的新源误标黄/红点。返回 0~3 或 None。"""
+    key = canonical(key)
     now = now if now is not None else time.time()
     with _LOCK:
         s = _STATS.get(key)
@@ -199,7 +225,7 @@ def snapshot() -> dict:
 def reset(key: str | None = None) -> None:
     with _LOCK:
         if key:
-            _STATS.pop(key, None)
+            _STATS.pop(canonical(key), None)
         else:
             _STATS.clear()
         _save_locked()

@@ -56,10 +56,12 @@ DEFAULTS = {
     # 热门资源解析是否优先高质量源（关闭则只按可播直链数）
     "prefer_quality_source": True,
     "admin_token": "",
-    # 仅用于「拉取订阅资源」的可选 HTTP(S) 代理（订阅配置 / spider jar / DRPY 脚本）。
-    # 播放、聚合搜索、CMS 探测等一律不走此代理（产品客户端保持 trust_env=False 直连）。
-    # 形如 http://user:pass@host:port ；留空表示直连。
+    # 订阅 / API 抓取代理。两种形态（mode 决定，auto 自动识别）：
+    #   http  = 正向代理 http://user:pass@host:port（Clash 等）
+    #   relay = URL 前缀中转 https://ac9.cc.cd/（CORSAPI/LunaTV 配套，拼 ?url=）
+    # 作用范围：拉取订阅配置 + 源测速/搜索/分类等 JSON API；媒体流仍直连。
     "subscription_proxy": "",
+    "subscription_proxy_mode": "auto",
     # 最近一次 LunaTV 源订阅导入的报告（仅展示用，不参与运行逻辑）。
     "lunatv_last_sync": {},
     # LunaTV 定时抓源：开启后按间隔从 LunaTV-config 拉取源清单并测速。
@@ -279,18 +281,28 @@ class Config:
             self._persist(cfg)
             return True, "ok"
 
-    def set_subscription_proxy(self, proxy_url: str) -> tuple[bool, str]:
-        """保存「订阅资源抓取」专用代理（空串=直连）。仅用于订阅配置/jar/DRPY脚本，
-        不影响播放与搜索。仅接受 http(s)/socks5 URL 形态。"""
+    def set_subscription_proxy(self, proxy_url: str,
+                               mode: str = "auto") -> tuple[bool, str]:
+        """保存「订阅 / API 抓取」代理（空串=直连）。
+
+        mode: auto 自动识别 / http 正向代理 / relay URL 前缀中转。
+        正向代理接受 http(s)/socks5；中转接受 http(s) 基础地址或含 {url} 模板。
+        """
         from urllib.parse import urlparse
         p = (proxy_url or "").strip()
+        m = (mode or "auto").strip().lower()
+        if m not in ("auto", "http", "relay"):
+            return False, "代理方式应为 auto / http / relay"
         if p:
             u = urlparse(p)
             if u.scheme not in ("http", "https", "socks5", "socks5h") or not u.hostname:
-                return False, "代理地址格式应为 http://user:pass@host:port"
+                return False, "代理地址格式应为 http://user:pass@host:port 或 https://中转域名/"
+            if m == "relay" and u.scheme not in ("http", "https"):
+                return False, "URL 前缀中转仅支持 http(s) 地址"
         with _LOCK:
             cfg = self.get()
             cfg["subscription_proxy"] = p
+            cfg["subscription_proxy_mode"] = m
             self._persist(cfg)
             return True, "ok"
 

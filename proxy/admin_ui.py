@@ -361,15 +361,23 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
       </div>
 
       <div class="card">
-        <div class="card-title">订阅抓取代理（可选）
+        <div class="card-title">订阅 / API 中转代理（可选）
           <label style="float:right;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:400;cursor:pointer">
             <input type="checkbox" id="subProxyEnable" style="width:14px;height:14px;accent-color:var(--accent)" onchange="onSubProxyToggle()"/> 启用代理</label></div>
-        <p class="card-sub">仅用于<strong>拉取 LunaTV 配置</strong>（GitHub 等被墙/解析失败时可走 Clash）。<strong>播放、搜索、CMS 探测一律不走此代理</strong>。形如 <code>http://用户:密码@主机:端口</code>，清空=直连。</p>
-        <div class="row">
-          <input type="text" id="subProxyUrl" placeholder="http://Clash:密码@192.168.x.x:7890" style="flex:2" disabled/>
+        <p class="card-sub">用于<strong>拉取 LunaTV 配置</strong>与<strong>源 API 请求</strong>（测速/搜索/分类）；<strong>媒体播放仍直连</strong>。支持两种格式：
+          <code>https://ac9.cc.cd/</code>（CORSAPI 式 URL 前缀中转，自动请求 <code>?url=原地址</code>）或
+          <code>http://用户:密码@主机:端口</code>（Clash 等 HTTP 代理）。清空=直连。</p>
+        <div class="row" style="display:grid;grid-template-columns:150px 1fr auto auto;gap:10px">
+          <select id="subProxyMode" onchange="onSubProxyModeChange()" disabled>
+            <option value="auto">自动识别</option>
+            <option value="relay">URL 前缀中转</option>
+            <option value="http">HTTP 代理</option>
+          </select>
+          <input type="text" id="subProxyUrl" placeholder="https://ac9.cc.cd/" disabled/>
           <button class="small" id="subProxySaveBtn" onclick="saveSubProxy(true)" disabled>保存并测试</button>
           <button class="small" id="subProxyClearBtn" onclick="clearSubProxy()" disabled>清空(直连)</button>
         </div>
+        <div class="hint" id="subProxyHint">中转示例：<code>https://ac9.cc.cd/</code>；HTTP 代理示例：<code>http://Clash:密码@192.168.x.x:7890</code></div>
         <div id="subProxyMsg" class="muted sm" style="margin-top:6px"></div>
       </div>
     </section>
@@ -720,10 +728,12 @@ async function loadHealth(){
     const GC=["ok","wait","bad","bad"];
     box.innerHTML=rows.map(s=>{
       const pct=Math.round((s.success_rate||0)*100);
-      return `<tr><td>${s.key}</td><td>${s.samples}</td>
+      const nm=s.name?esc(s.name):(s.exists===false?"已移除源":"未命名源");
+      const sub=s.host?esc(s.host):esc(s.key);
+      return `<tr><td><div>${nm}</div><div class="muted sm">${sub}</div></td><td>${s.samples}</td>
         <td>${pct}%</td><td>${(s.avg_latency||0).toFixed(1)}s</td>
         <td class="st ${GC[s.grade]||''}">${G[s.grade]||""}</td>
-        <td><button class="small" onclick="resetHealth('${s.key}')">清零</button></td></tr>`;
+        <td><button class="small" onclick="resetHealth('${esc(s.key)}')">清零</button></td></tr>`;
     }).join("");
   }catch(e){box.innerHTML='<tr><td colspan="6" class="muted">读取失败</td></tr>';}
 }
@@ -810,44 +820,59 @@ async function lunaSyncNow(btn){
   finally{btn.disabled=false;btn.textContent=old;}
 }
 
-// ---------- 订阅抓取代理（仅拉订阅/jar/脚本，不影响播放） ----------
+// ---------- 订阅 / API 中转代理（配置拉取 + 源 API，不影响播放） ----------
+function subProxyPlaceholder(mode){
+  return mode==="relay"?"https://ac9.cc.cd/":"http://Clash:密码@192.168.x.x:7890";
+}
+function onSubProxyModeChange(){
+  const mode=$("subProxyMode").value,inp=$("subProxyUrl"),hint=$("subProxyHint");
+  if(!inp)return;
+  inp.placeholder=subProxyPlaceholder(mode);
+  if(hint)hint.innerHTML= mode==="relay"
+    ? '中转示例：<code>https://ac9.cc.cd/</code>，请求自动拼成 <code>?url=源地址</code>；可填带 <code>{url}</code> 的模板。'
+    : 'HTTP 代理示例：<code>http://Clash:密码@192.168.x.x:7890</code>；自动识别模式下按是否带端口判断。';
+}
 function initSubProxy(){
   const p=(CFG&&CFG.subscription_proxy)||"";
-  const en=$("subProxyEnable"),inp=$("subProxyUrl"),sb=$("subProxySaveBtn"),cb=$("subProxyClearBtn"),msg=$("subProxyMsg");
+  const mode=(CFG&&CFG.subscription_proxy_mode)||"auto";
+  const en=$("subProxyEnable"),sel=$("subProxyMode"),inp=$("subProxyUrl"),sb=$("subProxySaveBtn"),cb=$("subProxyClearBtn"),msg=$("subProxyMsg");
   if(!en)return;
+  if(sel)sel.value=mode;
   inp.value=p;en.checked=!!p;
-  inp.disabled=!en.checked;sb.disabled=!en.checked;cb.disabled=!p;
-  msg.textContent=p?"当前经代理拉取订阅资源":"当前直连（未设代理）";
+  inp.disabled=!en.checked;if(sel)sel.disabled=!en.checked;sb.disabled=!en.checked;cb.disabled=!p;
+  onSubProxyModeChange();
+  msg.textContent=p?("当前已启用"+(mode==="relay"?"（URL 前缀中转）":mode==="http"?"（HTTP 代理）":"（自动识别）")+"，作用于配置拉取与源 API"):"当前直连（未设代理）";
   msg.style.color="";
 }
 function onSubProxyToggle(){
-  const en=$("subProxyEnable"),inp=$("subProxyUrl"),sb=$("subProxySaveBtn");
-  inp.disabled=!en.checked;sb.disabled=!en.checked;
+  const en=$("subProxyEnable"),sel=$("subProxyMode"),inp=$("subProxyUrl"),sb=$("subProxySaveBtn");
+  inp.disabled=!en.checked;if(sel)sel.disabled=!en.checked;sb.disabled=!en.checked;
   if(en.checked)inp.focus();
 }
 async function saveSubProxy(test){
-  const inp=$("subProxyUrl"),msg=$("subProxyMsg");
+  const inp=$("subProxyUrl"),msg=$("subProxyMsg"),mode=$("subProxyMode").value;
   const proxy=inp.value.trim();
-  if(!proxy){toast("请填写代理地址，或点清空直连","fail");return;}
+  if(!proxy){toast("请填写代理或中转地址，或点清空直连","fail");return;}
   msg.textContent="保存并测试连通性…";msg.style.color="";
   try{
-    const r=await jpost("/v/api/ext/subscription-proxy",{proxy});
+    const r=await jpost("/v/api/ext/subscription-proxy",{proxy,mode});
     if(r.code!==0){msg.textContent="未保存："+(r.msg||"格式错误");msg.style.color="var(--danger)";return;}
     const d=r.data||{};
     if(test){
-      msg.textContent=d.test_ok?("✓ 已保存，代理连通（"+(d.test_msg||"")+"），仅作用于订阅资源抓取")
-                               :("已保存，但代理测试失败："+(d.test_msg||""));
+      msg.textContent=d.test_ok?("✓ 已保存，"+(d.mode==="relay"?"中转":"代理")+"连通（"+(d.test_msg||"")+"），作用于配置拉取与源 API")
+                               :("已保存，但连通测试失败："+(d.test_msg||""));
       msg.style.color=d.test_ok?"var(--ok,#3a9)":"var(--warn,#d59a2b)";
     }else{msg.textContent="已保存";}
     $("subProxyClearBtn").disabled=false;
-    toast("代理已保存");
+    toast("已保存");
   }catch(e){msg.textContent="请求失败："+String(e);msg.style.color="var(--danger)";}
 }
 async function clearSubProxy(){
-  if(!confirm("清空订阅代理、改为直连？"))return;
-  const r=await jpost("/v/api/ext/subscription-proxy",{proxy:""});
+  if(!confirm("清空订阅 / API 中转代理、改为直连？"))return;
+  const mode=$("subProxyMode").value;
+  const r=await jpost("/v/api/ext/subscription-proxy",{proxy:"",mode});
   if(r.code===0){$("subProxyUrl").value="";$("subProxyEnable").checked=false;
-    $("subProxyUrl").disabled=true;$("subProxySaveBtn").disabled=true;$("subProxyClearBtn").disabled=true;
+    $("subProxyUrl").disabled=true;$("subProxyMode").disabled=true;$("subProxySaveBtn").disabled=true;$("subProxyClearBtn").disabled=true;
     $("subProxyMsg").textContent="已清空，当前直连";$("subProxyMsg").style.color="";toast("已切回直连");}
   else toast(r.msg||"失败","fail");
 }

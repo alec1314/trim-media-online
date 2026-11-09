@@ -25,7 +25,7 @@ PIP="$VENV/bin/pip"
 
 # 核心服务启动【强依赖】。wasmtime 等可选重依赖不在此列（dduo WASM 源惰性导入，
 # 缺失时相关功能优雅降级，绝不拖垮主服务）。
-CORE_PKGS=(fastapi uvicorn httpx)
+CORE_PKGS=(fastapi uvicorn httpx curl_cffi)
 
 PIP_MIRRORS=(
   "https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -38,7 +38,7 @@ PIP_MIRRORS=(
 
 # ---------- 1. venv ----------
 # 已有可用 venv 且核心包齐全：直接通过（升级场景不重复安装，秒退）。
-if [ -x "$PYBIN" ] && "$PYBIN" -c 'import fastapi,uvicorn,httpx' >/dev/null 2>&1; then
+if [ -x "$PYBIN" ] && "$PYBIN" -c 'import fastapi,uvicorn,httpx,curl_cffi' >/dev/null 2>&1; then
   log "核心依赖已就绪，跳过安装"
   exit 0
 fi
@@ -96,7 +96,7 @@ fi
 
 # ---------- 4. 真实 import 自检 ----------
 if ! "$PYBIN" - <<'PY' >> "$LOG" 2>&1
-import fastapi, uvicorn, httpx, starlette, pydantic
+import fastapi, uvicorn, httpx, starlette, pydantic, curl_cffi
 print("[deps] import OK:",
       "fastapi", fastapi.__version__,
       "uvicorn", uvicorn.__version__,

@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 import providers
+import subfetch
 from store import make_guid
 
 PAGE_SIZE = 20
@@ -141,7 +142,8 @@ def classify_source_class(name: str, adult_allowed: bool) -> str | None:
 
 async def _fetch_class_list(client: httpx.AsyncClient, source: dict) -> list[dict]:
     base = source["api"].split("/at/json")[0].split("?")[0]
-    r = await client.get(base, params={"ac": "list"},
+    target = subfetch.wrap(subfetch.build_url(base, {"ac": "list"}))
+    r = await client.get(target,
                          headers={"User-Agent": "Mozilla/5.0"}, timeout=HTTP_TIMEOUT)
     r.raise_for_status()
     j = r.json()
@@ -155,7 +157,9 @@ async def _fetch_category_page(client: httpx.AsyncClient, source: dict,
     """返回 (本页 vod 列表, 该分类总页数)。"""
     base = source["api"].split("/at/json")[0].split("?")[0]
     # 注意：分类深翻不能带 h 参数（部分源加 h 后返回空/pagecount=0）。
-    r = await client.get(base, params={"ac": "detail", "t": type_id, "pg": page},
+    target = subfetch.wrap(subfetch.build_url(
+        base, {"ac": "detail", "t": type_id, "pg": page}))
+    r = await client.get(target,
                          headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
     r.raise_for_status()
     j = r.json()
@@ -198,9 +202,7 @@ class Catalog:
             return self.status()
         self._refreshing = True
         try:
-            async with httpx.AsyncClient(
-                    follow_redirects=True, trust_env=False,
-                    verify=False) as client:
+            async with subfetch.async_api_client() as client:
                 await asyncio.gather(
                     *[self._load_source_classes(client, s) for s in sources],
                     return_exceptions=True)
@@ -222,9 +224,7 @@ class Catalog:
                     order.append(key)
             probed: dict[tuple[str, str], dict] = {}
 
-            async with httpx.AsyncClient(
-                    follow_redirects=True, trust_env=False,
-                    verify=False) as client:
+            async with subfetch.async_api_client() as client:
                 async def probe_one(sid, cat, cl):
                     source = self._source_by_id(sid)
                     if not source:
@@ -504,9 +504,7 @@ class Catalog:
         sem = asyncio.Semaphore(10)
 
         async def once(timeout):
-            async with httpx.AsyncClient(follow_redirects=True,
-                                         trust_env=False,
-                                         verify=False) as client:
+            async with subfetch.async_api_client() as client:
                 async def bound(r):
                     async with sem:
                         return await fetch_one(client, r, timeout)

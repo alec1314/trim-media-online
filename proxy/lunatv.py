@@ -151,7 +151,8 @@ async def fetch_config(*, preset: str = "", url: str = "") -> tuple[dict, str]:
     async with subfetch.async_sub_client() as client:
         for candidate in _url_candidates(target):
             try:
-                r = await client.get(candidate, timeout=12,
+                target_url = subfetch.wrap(candidate)
+                r = await client.get(target_url, timeout=12,
                                      headers={"User-Agent": "Mozilla/5.0"})
                 if r.status_code != 200:
                     last = f"HTTP {r.status_code} @ {candidate}"

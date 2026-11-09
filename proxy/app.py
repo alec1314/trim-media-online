@@ -3856,31 +3856,28 @@ async def ext_set_config(request: Request):
 
 @app.post("/v/api/ext/subscription-proxy")
 async def ext_set_subscription_proxy(request: Request):
-    """设置/清空「仅拉取订阅资源」的代理（订阅配置/spider jar/DRPY脚本）。
+    """设置/清空「订阅 / API 抓取」代理（订阅配置 + 源测速/搜索/分类）。
 
-    播放、搜索、CMS 探测不走此代理。body: {"proxy":"http://user:pass@host:port"或""}
-    会即时保存并用该代理探测一次（拉一个轻量 URL），返回连通结果。
+    body: {"proxy":"代理或中转地址"或"", "mode":"auto|http|relay"}
+    - http 正向代理：http://user:pass@host:port
+    - relay URL 前缀中转：https://ac9.cc.cd/（自动拼 ?url=）
+    会即时保存并实测一次（直连/中转拉 generate_204），返回连通结果。
     """
     body = await request.json()
     px = str(body.get("proxy", "") or "").strip()
-    ok, msg = config.set_subscription_proxy(px)
+    mode = str(body.get("mode", "") or "auto").strip().lower()
+    ok, msg = config.set_subscription_proxy(px, mode)
     if not ok:
         return JSONResponse({"code": 400, "msg": msg}, status_code=400)
-    # 实测连通：经该代理拉一个小资源（默认 GitHub generate_204），失败也保存但提示
-    test_ok, test_msg = False, ""
     import subfetch
+    # 实测连通：按当前模式请求一个小资源，失败也保存但提示
     if px:
-        try:
-            import httpx as _httpx
-            with _httpx.Client(trust_env=False, verify=False, timeout=12,
-                               proxy=px) as cli:
-                rr = cli.get("https://www.gstatic.com/generate_204")
-                test_ok = rr.status_code in (200, 204)
-                test_msg = f"HTTP {rr.status_code}"
-        except Exception as exc:  # noqa: BLE001
-            test_msg = f"{type(exc).__name__}: {str(exc)[:100]}"
+        test_ok, test_msg = subfetch.connectivity_test()
+    else:
+        test_ok, test_msg = True, ""
     return {"code": 0, "msg": "",
-            "data": {"proxy": subfetch.subscription_proxy(),
+            "data": {"proxy": subfetch.proxy_setting(),
+                     "mode": subfetch.proxy_mode(),
                      "test_ok": (True if not px else test_ok),
                      "test_msg": ("直连（未设置代理）" if not px else test_msg)}}
 
@@ -3940,7 +3937,9 @@ async def lunatv_sync(trigger: str = "manual", preset: str = "", url: str = "",
         candidates = [s for s in sites
                       if s["api"].rstrip("/").lower() not in by_api]
 
-        sem = asyncio.Semaphore(12)
+        # 走中转时降并发：公共中转站对突发并发限流，高并发会把好源误判为失败
+        import subfetch
+        sem = asyncio.Semaphore(4 if subfetch.proxy_mode() == "relay" else 12)
 
         async def _probe(api: str) -> dict:
             async with sem:
@@ -4043,7 +4042,8 @@ async def ext_lunatv_status():
         "sync": _lunatv_sync_conf(),
         "last": cfg.get("lunatv_last_sync") or {},
         "stats": cfg.get("lunatv_sync_stats") or {},
-        "proxy": bool(__import__("subfetch").subscription_proxy()),
+        "proxy": bool(__import__("subfetch").proxy_setting()),
+        "proxy_mode": __import__("subfetch").proxy_mode(),
         "syncing": _lunatv_sync_lock.locked(),
     }}
 
@@ -4194,6 +4194,18 @@ async def admin_page():
 @app.get("/v/api/ext/source-health")
 async def source_health():
     snap = sourcehealth.snapshot()
+    # 把源 id 映射回资源站名称/域名，管理页才能对上号（源被删除则留空）
+    by_id = {s["id"]: s for s in config.all_sources()}
+    for row in snap.values():
+        src = by_id.get(row["key"]) or {}
+        api = str(src.get("api") or "")
+        row["name"] = str(src.get("name") or "")
+        row["api"] = api
+        try:
+            row["host"] = urllib.parse.urlparse(api).netloc
+        except Exception:
+            row["host"] = ""
+        row["exists"] = bool(src)
     # 按健康等级、成功率、延迟排序输出，便于管理页展示
     rows = sorted(
         snap.values(),

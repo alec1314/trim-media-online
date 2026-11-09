@@ -18,6 +18,7 @@ import httpx
 
 import features
 import sourcehealth
+import subfetch
 
 # trim-media-online 不内置任何资源站线路：所有苹果 CMS V10 采集接口
 # 均由用户在管理页自行添加与启用（见 README「源的要求」一节）。
@@ -155,7 +156,8 @@ async def _search_source_full(client: httpx.AsyncClient, source: dict,
     """搜索单源，返回 (结果, 接口是否正常)。接口正常但无结果为 ([] , True)。"""
     params = {"ac": "detail", "wd": keyword}
     try:
-        r = await client.get(source["api"], params=params,
+        target = subfetch.wrap(subfetch.build_url(source["api"], params))
+        r = await client.get(target,
                              headers={"User-Agent": "Mozilla/5.0"},
                              timeout=timeout)
         if r.status_code != 200:
@@ -286,11 +288,11 @@ async def probe_source(api: str, keyword: str = "庆余年",
         return {"ok": False, "status": 0, "elapsed_ms": 0, "count": 0,
                 "sample": "", "error": "地址需以 http(s):// 开头"}
     try:
-        async with httpx.AsyncClient(follow_redirects=True,
-                                     trust_env=False) as client:
+        async with subfetch.async_api_client() as client:
+            target = subfetch.wrap(subfetch.build_url(
+                api, {"ac": "detail", "wd": keyword}))
             r = await client.get(
-                api, params={"ac": "detail", "wd": keyword},
-                headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+                target, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
             ms = int((time.monotonic() - t0) * 1000)
             if r.status_code != 200:
                 return {"ok": False, "status": r.status_code,
@@ -317,11 +319,10 @@ async def probe_source(api: str, keyword: str = "庆余年",
     if not lst:
         # 接口合法但该词无结果，再试分类列表确认源活着
         try:
-            async with httpx.AsyncClient(follow_redirects=True,
-                                         trust_env=False) as client:
+            async with subfetch.async_api_client() as client:
+                target2 = subfetch.wrap(subfetch.build_url(api, {"ac": "list", "pg": 1}))
                 r2 = await client.get(
-                    api, params={"ac": "list", "pg": 1},
-                    headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+                    target2, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
                 j2 = r2.json()
             if isinstance(j2, dict) and j2.get("code") in (1, "1"):
                 return {"ok": True, "status": 200, "elapsed_ms": ms,
@@ -362,7 +363,9 @@ async def search_all(keyword: str, sources=None, fast: bool = False
     if not targets:
         return []
     timeout = SEARCH_TIMEOUT_FAST if fast else SEARCH_TIMEOUT
-    sem = asyncio.Semaphore(SEARCH_CONCURRENCY)
+    # 走中转时降并发：公共中转站对突发并发限流，会把好源误判为失败并进负缓存
+    _conc = 4 if subfetch.proxy_mode() == "relay" else SEARCH_CONCURRENCY
+    sem = asyncio.Semaphore(_conc)
 
     async def one(client: httpx.AsyncClient, s: dict, key: str):
         async with sem:
@@ -376,7 +379,7 @@ async def search_all(keyword: str, sources=None, fast: bool = False
                 _search_neg[key] = time.time() + SEARCH_FAIL_TTL
             return titles
 
-    async with httpx.AsyncClient(follow_redirects=True, trust_env=False) as client:
+    async with subfetch.async_api_client() as client:
         results = await asyncio.gather(
             *[one(client, s, k) for s, k in targets], return_exceptions=True)
     titles: list[OnlineTitle] = []
