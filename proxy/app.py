@@ -3104,6 +3104,7 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
         return f"dec=1&k={b64e(decrypt_key.hex())}&iv={b64e(iv.hex())}"
 
     compact_i = 0
+    order_refs: list[str] = []   # 分片顺序（供预取定位下一片）
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("#EXT-X-KEY") and decrypt_key is not None:
@@ -3116,8 +3117,10 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
                 uri = m.group(1)
                 if compact_rid:
                     ref = f"hls?r={compact_rid}&i={compact_i}"
+                    order_refs.append(f"{ONLINE_PREFIX}/{mg}/{ref}")
                 else:
                     ref = _seg_url(mg, urllib.parse.urljoin(cur, uri), sel_qs)
+                    order_refs.append(ref)
                 compact_i += 1
                 return f'URI="{ref}"'
             raw = re.sub(r'URI="([^"]+)"', repl, line, flags=re.I)
@@ -3126,8 +3129,9 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
             out_lines.append(raw)
         else:
             if compact_rid:
-                out_lines.append(
-                    f"hls?r={compact_rid}&i={compact_i}")
+                ref = f"hls?r={compact_rid}&i={compact_i}"
+                order_refs.append(f"{ONLINE_PREFIX}/{mg}/{ref}")
+                out_lines.append(ref)
                 compact_i += 1
             else:
                 if decrypt_key is not None:
@@ -3135,8 +3139,11 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
                     extra = "&".join(parts)
                 else:
                     extra = sel_qs
-                out_lines.append(_seg_url(mg, urllib.parse.urljoin(cur, line), extra))
+                ref = _seg_url(mg, urllib.parse.urljoin(cur, line), extra)
+                order_refs.append(ref)
+                out_lines.append(ref)
             seg_index += 1
+    _register_seg_order(mg, order_refs)
     return "\n".join(out_lines) + "\n", cur
 
 
@@ -3473,51 +3480,87 @@ async def hls_cors_preflight(rest: str):
     return _cors_preflight()
 
 
-@app.get(f"{ONLINE_PREFIX}/{{mg}}/seg")
-async def hls_seg(mg: str, request: Request):
-    u = request.query_params.get("u", "")
-    try:
-        src_url = b64d(u)
-    except Exception:
-        return Response("bad u", status_code=400)
-    await _await_pending_chart(mg)
-    picked = _pick_episode(mg, request)
-    headers = picked["headers"] if picked else {}
-    # 透传 Range（播放器 seek）
+# ===== HLS 分片预取（借鉴 LunaTV：边播边预取后续分片，缓冲速度提升 2-4 倍） =====
+# 播放器拉第 N 片时，后台并发预取 N+1/N+2 片入内存缓存（50MB 上限，600s TTL），
+# 播放器随后请求直接命中内存，不再等上游 CDN。Range/seek 请求绕过缓存。
+_SEG_PREFETCH_N = 2
+_SEG_CACHE_TTL = 600.0
+_SEG_CACHE_MAX = 50 * 1024 * 1024
+_SEG_CACHE: dict[tuple, list] = {}   # key -> [ts, body, status, resp_headers]
+_SEG_CACHE_SIZE = 0
+_SEG_INFLIGHT: set = set()           # 预取中的 key，防重复
+_SEG_ORDER: dict[str, list] = {}     # mg -> [ts, [改写后的分片本地引用顺序]]
+
+
+def _seg_cache_key(mg: str, params) -> tuple:
+    return (mg, params.get("u", ""), params.get("dec", ""),
+            params.get("k", ""), params.get("iv", ""))
+
+
+def _seg_cache_get(key):
+    hit = _SEG_CACHE.get(key)
+    if hit and time.time() - hit[0] < _SEG_CACHE_TTL:
+        return hit[1], hit[2], hit[3]
+    if hit:
+        _SEG_CACHE.pop(key, None)
+    return None
+
+
+def _seg_cache_put(key, body: bytes, status: int, headers: dict) -> None:
+    global _SEG_CACHE_SIZE
+    if _seg_cache_get(key) is not None:
+        return
+    _SEG_CACHE[key] = [time.time(), body, status, headers]
+    _SEG_CACHE_SIZE += len(body)
+    while _SEG_CACHE_SIZE > _SEG_CACHE_MAX and len(_SEG_CACHE) > 1:
+        k0 = next(iter(_SEG_CACHE))
+        _SEG_CACHE_SIZE -= len(_SEG_CACHE[k0][1])
+        _SEG_CACHE.pop(k0, None)
+
+
+def _register_seg_order(mg: str, refs: list) -> None:
+    """改写播放清单时登记分片顺序，供预取定位「下一片」。"""
+    _SEG_ORDER[mg] = [time.time(), list(refs)]
+    if len(_SEG_ORDER) > 1000:
+        for k in list(_SEG_ORDER)[:500]:
+            _SEG_ORDER.pop(k, None)
+
+
+async def _seg_load(mg: str, params, headers: dict, range_value: str | None,
+                    request: Request):
+    """取一个分片：命中预取缓存直接返回；否则抓上游并做 AES 解密 / PNG 剥壳。
+    返回 (body, status, resp_headers)。带 Range 的请求绕过缓存。"""
+    key = _seg_cache_key(mg, params)
+    if not range_value:
+        hit = _seg_cache_get(key)
+        if hit:
+            return hit
     fwd = dict(headers)
-    # 加密 HLS 由本服务解密：不能按密文转发任意字节 Range，需完整拉取后回传纯 TS。
-    if request.query_params.get("dec") == "1":
+    if params.get("dec") == "1":
         fwd.pop("Range", None)
-    if "range" in request.headers and request.query_params.get("dec") != "1":
-        fwd["Range"] = request.headers["range"]
-    try:
-        # 分片在播放中途持续拉取，对瞬时抖动必须重试，否则单次失败播放器直接报错
-        r = await ext_get_retry(request, src_url, fwd, tries=4, timeout=30.0)
-    except Exception as exc:
-        _log.warning("seg fetch fail %s %s", type(exc).__name__,
-                     urllib.parse.urlsplit(src_url).netloc)
-        return Response(f"seg fail {type(exc).__name__}", status_code=502)
+    elif range_value:
+        fwd["Range"] = range_value
+    src_url = b64d(params.get("u", ""))
+    # 分片在播放中途持续拉取，对瞬时抖动必须重试，否则单次失败播放器直接报错
+    r = await ext_get_retry(request, src_url, fwd, tries=4, timeout=30.0)
     body = r.content
-    # 服务端解密 AES-128 HLS 分片：m3u8 已移除 EXT-X-KEY，这里把密文 TS 解成纯 TS，
-    # 并强制按完整 200 内容返回（密文 206 不能直接解密/拼接）。
-    decrypt_resp_status = r.status_code
-    if request.query_params.get("dec") == "1":
+    status = r.status_code
+    ctype = r.headers.get("content-type", "")
+    # 服务端解密 AES-128 HLS 分片：m3u8 已移除 EXT-X-KEY，把密文 TS 解成纯 TS
+    if params.get("dec") == "1":
         try:
             import quality as _quality
-            key = bytes.fromhex(b64d(request.query_params.get("k", "")))
-            ivhex = b64d(request.query_params.get("iv", ""))
-            iv = bytes.fromhex(ivhex)
-            if len(key) == 16 and len(iv) == 16:
-                dec = await _quality._aes_cbc_decrypt(body, key, iv)
+            keyb = bytes.fromhex(b64d(params.get("k", "")))
+            iv = bytes.fromhex(b64d(params.get("iv", "")))
+            if len(keyb) == 16 and len(iv) == 16:
+                dec = await _quality._aes_cbc_decrypt(body, keyb, iv)
                 if dec and len(dec) >= 188 and dec[0] == 0x47:
                     body = dec
-                    decrypt_resp_status = 200
+                    status = 200
         except Exception as exc:
             _log.warning("seg decrypt fail: %s", type(exc).__name__)
-    ctype = r.headers.get("content-type", "")
     unwrapped = False
-    # 部分源把真实 TS 分片伪装成「1×1 PNG 头 + TS」。剥掉 PNG 外壳
-    # 还原成纯 TS，飞牛播放器才能正常解码（通用兼容，对所有源生效）
+    # 部分源把真实 TS 分片伪装成「1×1 PNG 头 + TS」。剥掉 PNG 外壳还原成纯 TS
     if body[:8] == b"\x89PNG\r\n\x1a\n":
         try:
             import quality
@@ -3529,9 +3572,8 @@ async def hls_seg(mg: str, request: Request):
         except Exception:
             pass
     drop = {"content-security-policy"}
-    if request.query_params.get("dec") == "1":
-        # 已在服务端解密并返回完整纯 TS：旧的 Range/content-range 必须移除，
-        # 否则严格客户端会因 200 + Content-Range/Accept-Ranges 语义矛盾拒绝该分片。
+    if params.get("dec") == "1":
+        # 已在服务端解密并返回完整纯 TS：旧的 Range/content-range 必须移除
         drop.update({"content-range", "accept-ranges"})
     if unwrapped:
         drop.add("content-type")
@@ -3540,10 +3582,71 @@ async def hls_seg(mg: str, request: Request):
     h["Content-Length"] = str(len(body))
     if unwrapped or "content-type" not in {k.lower() for k in h}:
         h["Content-Type"] = ctype or "video/mp2t"
-    if r.status_code in _RETRY_STATUS:
-        _log.warning("seg upstream %s %s", r.status_code,
+    # 单片超过 8MB 视为异常大响应，不入缓存（防单key占满池）
+    if not range_value and len(body) < 8 * 1024 * 1024:
+        _seg_cache_put(key, body, status, h)
+    if status in _RETRY_STATUS:
+        _log.warning("seg upstream %s %s", status,
                      urllib.parse.urlsplit(src_url).netloc)
-    return Response(content=body, status_code=decrypt_resp_status, headers=h)
+    return body, status, h
+
+
+def _schedule_seg_prefetch(mg: str, request: Request, headers: dict) -> None:
+    """拉完第 N 片后，后台预取顺序表里的 N+1/N+2 片。"""
+    try:
+        entry = _SEG_ORDER.get(mg)
+        if not entry or time.time() - entry[0] > 1800:
+            return
+        cur = request.url.path + (("?" + request.url.query)
+                                   if request.url.query else "")
+        refs = entry[1]
+        try:
+            i = refs.index(cur)
+        except ValueError:
+            return
+        for ref in refs[i + 1:i + 1 + _SEG_PREFETCH_N]:
+            sp = urllib.parse.urlsplit(ref)
+            params = {k: v[0] for k, v in
+                      urllib.parse.parse_qs(sp.query).items()}
+            key = _seg_cache_key(mg, params)
+            if key in _SEG_INFLIGHT or _seg_cache_get(key) is not None:
+                continue
+            _SEG_INFLIGHT.add(key)
+
+            async def _run(key=key, params=params, headers=headers):
+                try:
+                    await _seg_load(mg, params, headers, None, request)
+                except Exception:  # noqa: BLE001
+                    pass
+                finally:
+                    _SEG_INFLIGHT.discard(key)
+            asyncio.create_task(_run())
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@app.get(f"{ONLINE_PREFIX}/{{mg}}/seg")
+async def hls_seg(mg: str, request: Request):
+    u = request.query_params.get("u", "")
+    try:
+        src_url = b64d(u)
+    except Exception:
+        return Response("bad u", status_code=400)
+    await _await_pending_chart(mg)
+    picked = _pick_episode(mg, request)
+    headers = picked["headers"] if picked else {}
+    # 加密 HLS 由本服务解密：不能按密文转发任意字节 Range，需完整拉取后回传纯 TS。
+    range_value = (request.headers.get("range")
+                   if request.query_params.get("dec") != "1" else None)
+    try:
+        body, status, h = await _seg_load(mg, request.query_params, headers,
+                                          range_value, request)
+    except Exception as exc:
+        _log.warning("seg fetch fail %s %s", type(exc).__name__,
+                     urllib.parse.urlsplit(src_url).netloc)
+        return Response(f"seg fail {type(exc).__name__}", status_code=502)
+    _schedule_seg_prefetch(mg, request, headers)
+    return Response(content=body, status_code=status, headers=h)
 
 
 @app.get(f"{ONLINE_PREFIX}/{{mg}}/hls")
@@ -3559,9 +3662,16 @@ async def hls_compact(mg: str, request: Request):
     if not src_url:
         return Response("expired", status_code=410)
     fwd: dict = {}
+    range_value = request.headers.get("range")
+    ck = (mg, "c:" + src_url, "", "", "")
+    if not range_value:
+        hit = _seg_cache_get(ck)
+        if hit:
+            _schedule_compact_prefetch(mg, request, rid, idx)
+            return Response(content=hit[0], status_code=hit[1], headers=hit[2])
     # 网盘 CDN 分片必须带登录 Cookie（裸取 412），按域名兜底注入
-    if request.headers.get("range"):
-        fwd["Range"] = request.headers["range"]
+    if range_value:
+        fwd["Range"] = range_value
     try:
         r = await ext_get_retry(request, src_url, fwd, tries=4, timeout=30.0)
     except Exception as exc:  # noqa: BLE001
@@ -3581,7 +3691,48 @@ async def hls_compact(mg: str, request: Request):
     h["Access-Control-Allow-Origin"] = "*"
     h["Content-Length"] = str(len(body))
     h.setdefault("Content-Type", ctype or "video/mp2t")
+    if not range_value and len(body) < 8 * 1024 * 1024:
+        _seg_cache_put(ck, body, r.status_code, h)
+    _schedule_compact_prefetch(mg, request, rid, idx)
     return Response(content=body, status_code=r.status_code, headers=h)
+
+
+def _schedule_compact_prefetch(mg: str, request: Request,
+                               rid: str, idx: int) -> None:
+    """紧凑分片的顺序预取：注册表天然有序，直接取 idx+1/idx+2。"""
+    for j in range(idx + 1, idx + 1 + _SEG_PREFETCH_N):
+        url = _hls_reg_get(rid, j)
+        if not url:
+            break
+        key = (mg, "c:" + url, "", "", "")
+        if key in _SEG_INFLIGHT or _seg_cache_get(key) is not None:
+            continue
+        _SEG_INFLIGHT.add(key)
+
+        async def _run(key=key, url=url):
+            try:
+                r = await ext_get_retry(request, url, {}, tries=2, timeout=20.0)
+                body = r.content
+                ctype = r.headers.get("content-type", "")
+                if body[:8] == b"\x89PNG\r\n\x1a\n":
+                    try:
+                        import quality
+                        payload, _ = quality._unwrap_segment(body)
+                        if payload is not body:
+                            body, ctype = payload, "video/mp2t"
+                    except Exception:
+                        pass
+                h = _safe_response_headers(r.headers, {"content-security-policy"})
+                h["Access-Control-Allow-Origin"] = "*"
+                h["Content-Length"] = str(len(body))
+                h.setdefault("Content-Type", ctype or "video/mp2t")
+                if len(body) < 8 * 1024 * 1024:
+                    _seg_cache_put(key, body, r.status_code, h)
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                _SEG_INFLIGHT.discard(key)
+        asyncio.create_task(_run())
 
 
 # ------------------------------------------------------------- 海报代理
