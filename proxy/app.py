@@ -1911,6 +1911,23 @@ async def play_info(request: Request):
                          "data": clientmod.normalize_detail(info, client)})
 
 
+def _source_label(provider: str) -> str:
+    """资源站 id -> 播放器里显示的源名称。
+
+    自定义源的 id 是 ``custom_<md5>``，直接展示会在播放器线路/清晰度菜单里
+    出现一串哈希；这里优先用用户在管理页配置的源名称。"""
+    provider = (provider or "").strip()
+    if not provider:
+        return ""
+    try:
+        for s in config.all_sources():
+            if s.get("id") == provider and (s.get("name") or "").strip():
+                return s["name"].strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return _PROVIDER_CN.get(provider, provider)
+
+
 def _line_choices(target: dict) -> list[dict]:
     """该播放目标可切换的线路：按资源站去重（同一站直链优先于 share 页），
     当前播放线路排第一。"""
@@ -1923,7 +1940,7 @@ def _line_choices(target: dict) -> list[dict]:
     out, seen_provider, seen_name = [], set(), set()
     for t in raw:
         provider = t["line"].split("::", 1)[0]
-        name = _PROVIDER_CN.get(provider, provider)
+        name = _source_label(provider)
         if provider in seen_provider:
             continue
         # 极端情况下不同 provider 映射到同名，加序号区分
@@ -3374,8 +3391,15 @@ async def hls_preset(mg: str, request: Request):
     else:
         # 多线路：无 RESOLUTION 的变体，飞牛 HLS 播放器呈现为可切换「线路」
         out = ["#EXTM3U", "#EXT-X-VERSION:3"]
+        used_names: dict[str, int] = {}
         for i, t in enumerate(hls_targets):
             name = _line_display_name(t)
+            # 同一源可能有多条播放组，源名重复时补序号，菜单里仍可区分
+            n = used_names.get(name, 0) + 1
+            used_names[name] = n
+            if n > 1:
+                name = f"{name}·{n}"
+            name = name.replace('"', "'")
             # NAME 供支持的播放器显示线路名；BANDWIDTH 差异化避免变体被合并
             out.append(f'#EXT-X-STREAM-INF:BANDWIDTH={1000000 + i * 100000},'
                        f'PROGRAM-ID=1,NAME="{name}"')
@@ -3395,9 +3419,15 @@ _GROUP_CN = {"m3u8": "主线路", "yun": "云播", "ff": "非凡", "uk": "优酷
 
 
 def _friendly_line(key: str) -> str:
-    """把 'provider::组名' 转成好认的线路名，如 baofeng::bfzym3u8 -> 暴风。"""
+    """把 'provider::组名' 转成好认的线路名，如 baofeng::bfzym3u8 -> 暴风。
+
+    用户自定义源的 provider 是 ``custom_<md5>``，优先显示管理页里配置的源名称；
+    内置源沿用中文简称映射。"""
     provider, _, group = key.partition("::")
-    pcn = _PROVIDER_CN.get(provider, provider)
+    pcn = _source_label(provider)
+    if provider.startswith("custom_"):
+        # 自定义源：播放器里只显示用户配置的源名称（同一源只保留一条线路菜单）
+        return pcn or group or "在线线路"
     if not group:
         return pcn
     if group in _GROUP_CN:

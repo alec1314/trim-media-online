@@ -29,9 +29,63 @@ PROXY = BASE / "proxy"
 PY = BASE / ".venv/bin/python"
 OFFICIAL = "trim-media"
 
+# TV / 盒子端直连 8005 TCP，不经过 nginx 的 /v。主代理通过 nftables 把入站
+# 8005 重定向到本机网关端口，再由网关转发到已接管的 UDS。设为 0 可关闭。
+TV_COMPAT = os.environ.get("TMO_TV_COMPAT", "1").lower() not in ("0", "false", "off", "no")
+TV_PORT = int(os.environ.get("TMO_TV_PORT", "18005"))
+NFT_TABLE = "tmo_tv8005"
+
 
 def log(m):
     print(f"[fnmedia] {m}", flush=True)
+
+
+def _nft(args, script: str | None = None) -> bool:
+    try:
+        r = subprocess.run(["nft", *args], input=script, text=True,
+                           capture_output=True, timeout=10)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def nft_ok() -> bool:
+    return _nft(["list", "table", "ip", NFT_TABLE])
+
+
+def nft_install() -> bool:
+    """把局域网访问 8005 的连接重定向到本机 TV 网关（IPv4/IPv6）。
+
+    失败不影响 /v 网页链路，只记录告警。"""
+    if not TV_COMPAT:
+        return False
+    script = (
+        f"table ip {NFT_TABLE} {{\n"
+        "  chain prerouting {\n"
+        "    type nat hook prerouting priority -110; policy accept;\n"
+        f"    tcp dport 8005 counter redirect to :{TV_PORT}\n"
+        "  }\n"
+        "}\n"
+        f"table ip6 {NFT_TABLE} {{\n"
+        "  chain prerouting {\n"
+        "    type nat hook prerouting priority -110; policy accept;\n"
+        f"    tcp dport 8005 counter redirect to :{TV_PORT}\n"
+        "  }\n"
+        "}\n"
+    )
+    for fam in ("ip", "ip6"):
+        _nft(["delete", "table", fam, NFT_TABLE])
+    ok = _nft(["-f", "-"], script)
+    if ok:
+        log(f"TV 兼容已启用：TCP 8005 -> 127.0.0.1:{TV_PORT}")
+    else:
+        log("TV 兼容规则安装失败（nft 不可用或无权限），仅网页链路可用")
+    return ok
+
+
+def nft_cleanup():
+    for fam in ("ip", "ip6"):
+        _nft(["delete", "table", fam, NFT_TABLE])
 
 
 def peer(path):
@@ -172,6 +226,23 @@ def main():
             [str(PY), str(PROXY / "webui_gateway.py"), str(BASE), str(TARGET)],
             cwd=str(PROXY), env=env)
 
+        # TV / 盒子端：本地 TCP 网关 + nftables 8005 重定向
+        def start_tv_gateway():
+            return subprocess.Popen(
+                [str(PY), str(PROXY / "tcp_gateway.py"),
+                 "0.0.0.0", str(TV_PORT), str(TARGET)],
+                cwd=str(PROXY), env=env)
+
+        tv_gw = None
+        if TV_COMPAT:
+            tv_gw = start_tv_gateway()
+            time.sleep(0.6)
+            if tv_gw.poll() is not None:
+                log(f"TV 网关启动失败 rc={tv_gw.returncode}（端口 {TV_PORT} 被占用？）")
+                tv_gw = None
+            else:
+                nft_install()
+
         # 捕获停止信号：先退出子进程再回滚
         stopping = {"v": False}
 
@@ -180,6 +251,7 @@ def main():
 
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
+        last_nft_check = time.time()
         while not stopping["v"]:
             rc = child.poll()
             if rc is not None:
@@ -190,8 +262,36 @@ def main():
                 gw = subprocess.Popen(
                     [str(PY), str(PROXY / "webui_gateway.py"), str(BASE), str(TARGET)],
                     cwd=str(PROXY), env=env)
+            if TV_COMPAT:
+                if tv_gw is not None and tv_gw.poll() is not None:
+                    log(f"TV 网关异常退出 rc={tv_gw.returncode}，重启")
+                    tv_gw = start_tv_gateway()
+                    time.sleep(0.4)
+                    if tv_gw.poll() is not None:
+                        # 网关起不来时撤销重定向，让 8005 回落到官方服务（fail-open）
+                        log("TV 网关无法恢复，撤销 8005 重定向")
+                        nft_cleanup()
+                        tv_gw = None
+                if tv_gw is not None and time.time() - last_nft_check > 30:
+                    last_nft_check = time.time()
+                    if not nft_ok():
+                        log("TV 兼容规则丢失（防火墙重载？），重新安装")
+                        nft_install()
             time.sleep(1)
     finally:
+        # 先撤销 8005 重定向并停掉 TV 网关，让 TV/盒子端立即回落到官方服务。
+        nft_cleanup()
+        tv_gw_p = locals().get("tv_gw")
+        if tv_gw_p is not None:
+            try:
+                if tv_gw_p.poll() is None:
+                    tv_gw_p.terminate()
+                    tv_gw_p.wait(timeout=2)
+            except Exception:
+                try:
+                    tv_gw_p.kill()
+                except Exception:
+                    pass
         # 先释放应用根目录里的桌面网关 socket 文件名，再等待子进程退出。
         # systemd 的 TimeoutStopSec 较短，不能把 unlink 放在阻塞 wait 之后。
         gw_path = locals().get("gw_sock")

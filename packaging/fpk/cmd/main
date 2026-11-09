@@ -5,6 +5,8 @@ case "${1:-}" in
   start)  systemctl start trim-media-online.service 2>>"${TMO_LOG}" || true; exit 0 ;;
   stop)
     systemctl stop trim-media-online.service 2>>"${TMO_LOG}" || true
+    # 兜底撤销 TV 兼容重定向，避免 8005 指向已停止的网关
+    for _fam in ip ip6; do nft delete table "${_fam}" tmo_tv8005 2>/dev/null || true; done
     sleep 0.5
     # 桌面网关监听的是应用根目录 socket；停止后清理残留，避免应用中心显示连接拒绝。
     for _root in "${TRIM_APPDEST:-}" "${TMO_APP_ROOT}/target" "${TMO_APP_ROOT}"; do

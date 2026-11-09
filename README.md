@@ -49,6 +49,7 @@ https://站点地址/api.php/provide/vod/at/json
 |---|---|
 | fnOS | **1.2.0 及以上**（FPK manifest 最低要求） |
 | 官方影视应用 | **trim.media `0.9.8-1`**（上游实测） |
+| TV / 盒子端 | 需内核支持 nftables；通过 8005 TCP 兼容网关接入（默认开启） |
 | CPU 架构 | `all`（纯 Python，安装时创建独立 venv） |
 | 安装方式 | fnOS 应用中心手动安装 FPK，可安装在 `/vol1`、`/vol2` 等数据卷 |
 | 依赖 | 官方「影视 (trim.media)」必须保持安装并启用 |
@@ -71,14 +72,43 @@ https://站点地址/api.php/provide/vod/at/json
 ## 工作原理
 
 ```
-浏览器/飞牛App → nginx(/v) → /var/run/trim_media.sock → trim-media-online(FastAPI)
-                                                   ├─ 普通请求 → 透传官方后端(upstream socket)
-                                                   ├─ /search/list → 注入在线结果（默认排最前）+ 本地结果
-                                                   ├─ /item /season/* /episode/* /play/* /stream/* → 伪造链路
-                                                   ├─ mediadb/list · mediadb/sum · item/list · item/<guid>
-                                                   │      → 注入豆瓣榜单四库 + 单源独立库（可选）
-                                                   └─ /v/media/online/* → HLS/分片/密钥/mp4 反向代理
+浏览器/飞牛App ── nginx(/v) ─────────────────┐
+                                            ├─→ /var/run/trim_media.sock
+TV / 盒子 ── TCP 8005 ── nftables → 18005 ───┘
+                                                     │
+                                                     ▼
+                                          trim-media-online(FastAPI)
+                                            ├─ 普通请求 → 透传官方后端(upstream socket)
+                                            ├─ /search/list → 注入在线结果（默认排最前）+ 本地结果
+                                            ├─ /item /season/* /episode/* /play/* /stream/* → 伪造链路
+                                            ├─ mediadb/list · mediadb/sum · item/list · item/<guid>
+                                            │      → 注入豆瓣榜单四库 + 单源独立库（可选）
+                                            └─ /v/media/online/* → HLS/分片/密钥/mp4 反向代理
 ```
+
+### TV / 盒子端
+
+飞牛影视 TV 端与部分第三方客户端会直连影视服务的 **8005 TCP 端口**，不经过 nginx 的
+`/v`，因此只接管 UDS 时这些客户端看不到在线内容。安装后扩展会：
+
+1. 在本机 `18005` 启动一个 TCP 网关，把连接转发到已接管的代理 UDS；
+2. 用 nftables 把入站 `8005` 重定向到该网关（IPv4 + IPv6）；
+3. 服务停止/卸载时自动撤销重定向，8005 立即回落到官方服务（fail-open）。
+
+网页端、手机端仍走原 `/v` 链路，不受影响。若与旁路由 / 端口转发规则冲突，可在
+systemd 单元中设置环境变量 `TMO_TV_COMPAT=0` 关闭该能力（TV 端将恢复为仅官方内容）。
+
+### 关于弹幕
+
+飞牛影视播放器没有弹幕渲染层，无法像 B 站一样直接叠加滚动弹幕。可行路径只有两条：
+
+1. **弹幕字幕（推荐折中）**：把弹幕转成 ASS / WebVTT 字幕轨（ASS 的 `\move` 可实现
+   滚动效果），走播放器自带字幕功能。TV 端明确支持 ASS，兼容性最好；代价是需要自备
+   弹幕接口、按片名/集数匹配，并提供时间偏移校准，且没有弹幕开关、屏蔽词、透明度等交互。
+2. **独立弹幕播放页**：自建 Web 播放器 + 弹幕层，体验最接近 B 站，但等于离开飞牛播放器。
+
+本项目不内置 B 站等第三方弹幕抓取（片源匹配不稳定，且受第三方接口条款约束）；若需要，
+建议按方案 1 做成「用户自配弹幕接口 + 手动时间偏移」的可选功能。
 
 ### 热门榜单媒体库（展示 / 播放解耦）
 
@@ -150,6 +180,8 @@ bash packaging/fpk/build.sh
 
 ## 已知限制
 
+- TV 端兼容依赖 nftables 把入站 8005 重定向到本机网关；若使用旁路由/端口转发，请确保 8005 未被其他规则提前 DNAT。
+- 飞牛原生播放器没有弹幕层，暂不提供在线弹幕；可行方案见下方「关于弹幕」。
 - 点播源随时间失效，本扩展不做转存/STRM 落库——即刷即播、即搜即播；失效源在管理页删除或替换。
 - 多线路聚合按「片名规范化 + 年份」判定，极少数同名不同作品可能被并为一体。
 - 官方 trim.media 升级若改动接口结构需相应适配；停用即恢复官方服务。

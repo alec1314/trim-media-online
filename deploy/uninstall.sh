@@ -8,6 +8,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 systemctl stop trim-media-online 2>/dev/null || true
 systemctl disable trim-media-online.service 2>/dev/null || true
+# 兜底清理 TV 兼容重定向（正常停止时 supervise 已清理）
+for fam in ip ip6; do nft delete table "$fam" tmo_tv8005 2>/dev/null || true; done
 rm -f /etc/systemd/system/trim-media-online.service
 systemctl daemon-reload || true
 
