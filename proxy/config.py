@@ -43,15 +43,6 @@ DEFAULTS = {
     "line_fastest_prefer": 0.25,
     # 虚拟“热门榜单”四库媒体库（豆瓣真实周榜/标签榜）
     "hot_library_enabled": True,
-    # 虚拟“海量分类”四库媒体库（苹果 CMS 分类深翻）。与热门榜单相互独立开关。
-    "catalog_library_enabled": True,
-    # 是否把每个启用的 TVBox 加固源（csp_*Guard，如比特/糯米/花花）生成为一张
-    # 独立“专区媒体库”卡片。默认关闭：加固源只作为播放时可切换的线路/搜索源，
-    # 不在媒体库列表里产生空库。需要专区墙时可在管理页打开。
-    "guard_zone_enabled": False,
-    # 是否在飞牛原生媒体库注入单张「🛡加固影视」聚合库（源→分类片单，后台预取
-    # 缓存、请求即时返回）。与 guard_zone_enabled（每源一张专区墙）相互独立。
-    "guard_native_enabled": True,
     # 置顶的虚拟媒体库 guid 集合（打开=在飞牛影视媒体库列表置顶，关闭=普通顺序）。
     "pinned_libs": [],
     "hot_library_title": "🌐在线热门",
@@ -69,15 +60,16 @@ DEFAULTS = {
     # 播放、聚合搜索、CMS 探测等一律不走此代理（产品客户端保持 trust_env=False 直连）。
     # 形如 http://user:pass@host:port ；留空表示直连。
     "subscription_proxy": "",
-    # 检查/下载插件更新安装包时可选的 HTTP(S) 代理（仅更新用途）。
-    # 留空则回退 subscription_proxy，再不行直连。仅存于本机 state，不随包分发。
-    "update_proxy": "",
-    # m3u8 流层去广告总开关（TVBox/OK影视 Pro rules 引擎 + 通用启发式）。
-    "ad_filter_enabled": True,
-    # 播放时动态检测（无订阅 rules 时，按 DISCONTINUITY 分段+时长/CDN/位置识别广告段）。
-    "ad_filter_dynamic": True,
     # 最近一次 LunaTV 源订阅导入的报告（仅展示用，不参与运行逻辑）。
     "lunatv_last_sync": {},
+    # LunaTV 定时抓源：开启后按间隔从 LunaTV-config 拉取源清单并测速。
+    "lunatv_sync_enabled": False,
+    "lunatv_sync_preset": "jin18",
+    "lunatv_sync_url": "",
+    "lunatv_sync_interval": 12,      # 小时
+    "lunatv_auto_disable": True,     # 连续两轮测速失败自动禁用
+    # 每源最近测速结果：id -> {ok, ms, fails, at}（供管理台展示与连续失败计数）
+    "lunatv_sync_stats": {},
 }
 
 # 已废弃、需从旧配置里清除的键
@@ -119,6 +111,8 @@ class Config:
                 m["builtin"] = True
                 m["standalone"] = bool(cur.get("standalone", False))
                 m["loose_filter"] = bool(cur.get("loose_filter", False))
+                m["origin"] = str(cur.get("origin") or "manual")
+                m["auto_disabled"] = bool(cur.get("auto_disabled", False))
                 merged.append(m)
             for sid, s in saved_by_id.items():
                 if sid in _BUILTIN_IDS or sid in removed:
@@ -128,6 +122,8 @@ class Config:
                 m["standalone"] = bool(s.get("standalone", False))
                 m["loose_filter"] = bool(s.get("loose_filter", False))
                 m["builtin"] = bool(s.get("builtin", False))
+                m["origin"] = str(s.get("origin") or "manual")
+                m["auto_disabled"] = bool(s.get("auto_disabled", False))
                 merged.append(m)
             cfg["sources"] = merged
             cfg["removed_ids"] = sorted(removed)
@@ -224,11 +220,11 @@ class Config:
             return True, sid
 
     def add_sources(self, items: list[dict], enabled: bool = True,
-                    standalone: bool = False) -> dict:
+                    standalone: bool = False, origin: str = "manual") -> dict:
         """批量添加自定义源（单次落盘）；按 API 地址去重。
 
-        items: [{"name": ..., "api": ...}]。返回
-        {"added": [name...], "duplicate": n, "invalid": n}。
+        items: [{"name": ..., "api": ...}]。origin 标记来源（manual/lunatv）。
+        返回 {"added": [name...], "duplicate": n, "invalid": n}。
         """
         added: list[str] = []
         duplicate = invalid = 0
@@ -253,7 +249,8 @@ class Config:
                 cfg["sources"].append(
                     {"id": sid, "name": name[:40], "api": api,
                      "enabled": bool(enabled), "standalone": bool(standalone),
-                     "builtin": False})
+                     "builtin": False, "origin": str(origin or "manual"),
+                     "auto_disabled": False})
                 seen.add(norm)
                 ids.add(sid)
                 added.append(name[:40])
@@ -340,6 +337,43 @@ class Config:
             target["loose_filter"] = bool(on)
             self._persist(cfg)
             return True, "ok"
+
+    def set_source_enabled(self, sid: str, on: bool,
+                           auto: bool = False) -> tuple[bool, str]:
+        """启用/禁用源；auto=True 表示由测速自动禁用，可被后续测速恢复。"""
+        with _LOCK:
+            cfg = self.get()
+            target = next((s for s in cfg["sources"] if s["id"] == sid), None)
+            if not target:
+                return False, "源不存在"
+            target["enabled"] = bool(on)
+            if on:
+                target["auto_disabled"] = False
+            elif auto:
+                target["auto_disabled"] = True
+            self._persist(cfg)
+            return True, "ok"
+
+    def apply_sync_result(self, stats: dict, report: dict,
+                          disable_ids: list[str],
+                          enable_ids: list[str]) -> None:
+        """一次性落盘 LunaTV 同步结果（测速统计 + 报告 + 自动禁用/恢复）。"""
+        with _LOCK:
+            cfg = self.get()
+            sid_map = {s["id"]: s for s in cfg["sources"]}
+            for sid in disable_ids:
+                s = sid_map.get(sid)
+                if s is not None:
+                    s["enabled"] = False
+                    s["auto_disabled"] = True
+            for sid in enable_ids:
+                s = sid_map.get(sid)
+                if s is not None:
+                    s["enabled"] = True
+                    s["auto_disabled"] = False
+            cfg["lunatv_sync_stats"] = dict(stats or {})
+            cfg["lunatv_last_sync"] = dict(report or {})
+            self._persist(cfg)
 
 
     def remove_source(self, sid: str) -> tuple[bool, str]:

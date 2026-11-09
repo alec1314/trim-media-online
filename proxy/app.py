@@ -64,6 +64,8 @@ def _self_url(url: str) -> str:
     return url
 _search_cache: dict[str, tuple[float, list]] = {}
 _search_inflight: dict[str, asyncio.Future] = {}
+# 聚合 brief 级缓存：搜索框与榜单点详情共用，避免同一片名重复全源搜索。
+_briefs_cache: dict[str, tuple[float, list[dict]]] = {}
 CACHE_TTL = 120
 # 在线热门按内容拆成 4 个虚拟媒体库。guid 由固定串 md5 派生，保持稳定。
 HOT_CATEGORIES = [
@@ -101,15 +103,6 @@ _PENDING_MEDIA_CHART: dict[str, str] = {}
 _CHART_FAILED_TS: dict[str, float] = {}
 _CHART_FAILED_TTL = 10 * 60
 
-# 海量分类片库（方案 C：按资源站分类深翻，每类数千部，无限滚动）。
-CATALOG_LIB_GUIDS: dict[str, str] = {
-    "movie":   "e91dd7347a49dbd874fb8a0e78ad7ad7",
-    "tv":      "196381f891d66a4de32f9032e8f244f3",
-    "anime":   "97fc49015edcb20cc423658401711b6c",
-    "variety": "cfff30730cffca2d1357e0c2b52fc2f5",
-}
-CATALOG_GUID_CAT = {g: c for c, g in CATALOG_LIB_GUIDS.items()}
-
 # —— 单源独立媒体库：每个启用 standalone 的源生成一张库卡片 ——
 _STANDALONE_PREFIX = "trim-online-standalone:"
 
@@ -145,15 +138,9 @@ def charts_enabled() -> bool:
     return bool(config.get().get("hot_library_enabled", True))
 
 
-def catalog_enabled() -> bool:
-    """海量四库独立开关（与热门榜单互不影响）。"""
-    return bool(config.get().get("catalog_library_enabled", True))
-
-
 def any_virtual_lib_enabled() -> bool:
-    if charts_enabled() or catalog_enabled():
-        return True
-    return False
+    """榜单关闭时仍需展示单源独立库；两者皆无则不注入虚拟库。"""
+    return charts_enabled() or bool(standalone_sources_active())
 
 
 def _tv_compat_date(v) -> str:
@@ -420,6 +407,9 @@ async def lifespan(app: FastAPI):
                 pass
     app.state.health_task = asyncio.create_task(_health_flush_loop())
 
+    # LunaTV 定时抓源 + 测速（开启后按配置间隔执行）
+    app.state.stop_sync = asyncio.Event()
+    app.state.sync_task = asyncio.create_task(_lunatv_sync_loop(app))
 
     try:
         yield
@@ -438,17 +428,22 @@ async def lifespan(app: FastAPI):
             await asyncio.to_thread(sourcehealth.flush)
         except Exception:
             pass
+        try:
+            app.state.stop_sync.set()
+            app.state.sync_task.cancel()
+            await app.state.sync_task
+        except (asyncio.CancelledError, Exception):
+            pass
         await app.state.up.aclose()
         await app.state.ext.aclose()
 
 
 async def _hot_worker(app: FastAPI):
-    """榜单 + 海量库路由后台刷新。启动先读旧缓存，稍等再刷新；之后按配置轮询。"""
+    """榜单刷新 + 单源独立库分类路由后台重建。"""
     await asyncio.sleep(4)
     while not app.state.stop_hot.is_set():
         cfg = config.get()
         charts_on = cfg.get("hot_library_enabled", True)
-        catalog_on = cfg.get("catalog_library_enabled", True)
         interval = max(1800, int(cfg.get("hot_refresh_interval", 6 * 3600)))
         if charts_on and chart_cache.stale(interval):
             try:
@@ -458,7 +453,7 @@ async def _hot_worker(app: FastAPI):
                 _log.warning("chart refresh timed out; keeping previous cache")
             except Exception as exc:
                 _log.warning("chart refresh failed, keeping previous cache: %s", exc)
-        if catalog_on and catalog.routes_stale():
+        if catalog.standalone_scopes() and catalog.routes_stale():
             try:
                 await asyncio.wait_for(
                     catalog.refresh_routes(config.enabled_sources()),
@@ -467,6 +462,28 @@ async def _hot_worker(app: FastAPI):
                 _log.warning("catalog routes failed: %s", exc)
         try:
             await asyncio.wait_for(app.state.stop_hot.wait(), timeout=300)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _lunatv_sync_loop(app: FastAPI):
+    """LunaTV 订阅定时同步：启动缓冲 90s，之后每 2 分钟检查一次是否到期。"""
+    await asyncio.sleep(90)
+    while not app.state.stop_sync.is_set():
+        try:
+            sc = _lunatv_sync_conf()
+            if sc["enabled"]:
+                last = (config.get().get("lunatv_last_sync") or {}).get("ts") or 0
+                if time.time() - float(last) >= sc["interval"] * 3600:
+                    try:
+                        await lunatv_sync(trigger="schedule")
+                        _log.info("lunatv scheduled sync done")
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning("lunatv scheduled sync failed: %s", exc)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await asyncio.wait_for(app.state.stop_sync.wait(), timeout=120)
         except asyncio.TimeoutError:
             pass
 
@@ -703,9 +720,13 @@ async def _aggregate_briefs(keyword: str, maxn: int | None = None,
                    and not str(s.get("id", "")).startswith(("spider-", "drpy-"))
                    and s.get("api")
                    and s.get("id") not in ("dduo", "xiaoya")]
-    titles = await providers.search_all(keyword, sources)
     if maxn is None:
         maxn = int(config.get().get("max_per_keyword", 12))
+    ck = f"{keyword}\x00{int(fast_only)}\x00{maxn}"
+    hit = _briefs_cache.get(ck)
+    if hit and time.time() - hit[0] < CACHE_TTL:
+        return hit[1]
+    titles = await providers.search_all(keyword, sources, fast=fast_only)
     # 跨源同名合并：同 规范化片名+年份 聚成一个条目，每个来源各成一条
     # 播放线路（供播放器「切换线路」）；过滤解说/预告/无直链。
     loose_ids = {s["id"] for s in sources if s.get("loose_filter")}
@@ -785,7 +806,12 @@ async def _aggregate_briefs(keyword: str, maxn: int | None = None,
         except Exception:  # noqa: BLE001
             pass
         briefs.append(brief)
-    return store.remember_merged(briefs)
+    result = store.remember_merged(briefs)
+    _briefs_cache[ck] = (time.time(), result)
+    if len(_briefs_cache) > 500:
+        for k in list(_briefs_cache)[:200]:
+            _briefs_cache.pop(k, None)
+    return result
 
 
 async def online_search(keyword: str, client: httpx.AsyncClient,
@@ -958,55 +984,6 @@ def _chart_rows_all(body: dict, cat: str) -> list[dict]:
     return [r for _, r in indexed]
 
 
-def _catalog_card(brief: dict, cat: str) -> dict:
-    row = inj.search_item(brief)
-    title = (brief.get("title") or "").strip()
-    remarks = (brief.get("remarks") or "").strip()
-    row["title"] = title + (f" ·{remarks}" if remarks else "")
-    row["ancestor_guid"] = CATALOG_LIB_GUIDS[cat]
-    row["ancestor_name"] = catalogmod.catalog_title(cat)
-    row["ancestor_category"] = catalogmod.catalog_mdb(cat)
-    row["video_guid"] = video_guid(brief["guid"])
-    return row
-
-
-def _catalog_filter(rows: list[dict], body: dict) -> list[dict]:
-    tags = body.get("tags")
-    if isinstance(tags, dict):
-        wanted = set(tags.get("type") or [])
-        mw = wanted & {"Movie", "TV", "Movie,TV"}
-        if "Movie,TV" in mw:
-            mw.discard("Movie,TV"); mw.update({"Movie", "TV"})
-        if mw:
-            rows = [r for r in rows if r.get("type") in mw]
-    elif isinstance(tags, list):
-        wanted = set(tags) & {"Movie", "TV"}
-        if wanted:
-            rows = [r for r in rows if r.get("type") in wanted]
-    rows = [_apply_marks(r) for r in rows]
-    if int(body.get("is_favorite") or 0):
-        rows = [r for r in rows if r.get("is_favorite")]
-    kw = str(body.get("keyword") or body.get("q") or body.get("title") or "").strip().lower()
-    if kw:
-        rows = [r for r in rows if kw in (r.get("title") or "").lower()]
-    # 海量库由资源站按“最近更新”排序，前端默认排序即保持此顺序；
-    # 用户显式按评分/年份/片名排序时在本页内排序（单页内有效）。
-    col = body.get("sort_column", "create_time")
-    reverse = str(body.get("sort_type", "DESC")).upper() != "ASC"
-    if col == "sort_title":
-        rows = sorted(rows, key=lambda r: r.get("title") or "", reverse=reverse)
-    elif col in ("release_date", "air_date", "year"):
-        rows = sorted(rows, key=lambda r: r.get("release_date") or "", reverse=reverse)
-    elif col in ("vote_average", "score"):
-        def sc(r):
-            try:
-                return float(r.get("vote_average") or 0)
-            except ValueError:
-                return 0
-        rows = sorted(rows, key=sc, reverse=True)
-    return rows
-
-
 def _page_args(body: dict, total: int) -> tuple[int, int, int]:
     page_size = max(1, min(int(body.get("page_size") or 22), 100))
     page = int(body.get("page") or body.get("p") or body.get("page_index")
@@ -1037,7 +1014,7 @@ async def mediadb_list(request: Request):
         return upstream
     payload = await _json_from_upstream(upstream)
     dbs = payload.get("data") if payload else None
-    vlib_guids = (set(CHART_LIB_GUIDS.values()) | set(CATALOG_LIB_GUIDS.values())
+    vlib_guids = (set(CHART_LIB_GUIDS.values())
                   | {standalone_lib_guid(s["id"]) for s in config.all_sources()})
     # 官方该接口偶发鉴权/抖动失败（TV 端会整体“加载失败”）。只要拿到过有效列表，
     # 或本次列表为空，都用本地虚拟库补全；官方失败则只返回我们的虚拟库，不把错误透传给 App。
@@ -1066,23 +1043,6 @@ async def mediadb_list(request: Request):
                     "poster": ps[0] if ps else "",
                     "posters": ps,
                     "category": chartmod.chart_cat_mdb(cat),
-                    "view_type": 0, "poster_type": 0, "refresh_disabled": True,
-                })
-        # 2) 海量分类片库（资源站深翻）；仅在已建立分类路由时展示。
-        # 海报只读本页/密集缓存，绝不在此联网抓取——TV/安卓 App 对该接口超时很敏感，
-        # 一次资源站首页请求可能耗时十余秒，导致客户端提示“加载失败/媒体库不存在”。
-        # 海量四库独立开关 catalog_library_enabled
-        if catalog_enabled() and any(catalog.available(c) for c, _, _ in catalogmod.CATALOG_CATEGORIES):
-            for cat, _t, _c in catalogmod.CATALOG_CATEGORIES:
-                if not catalog.available(cat):
-                    continue
-                ps = [inj._poster(p) for p in catalog.cached_page_posters(cat, 8)]
-                inserts.append({
-                    "guid": CATALOG_LIB_GUIDS[cat],
-                    "title": catalogmod.catalog_title(cat),
-                    "poster": ps[0] if ps else "",
-                    "posters": ps,
-                    "category": catalogmod.catalog_mdb(cat),
                     "view_type": 0, "poster_type": 0, "refresh_disabled": True,
                 })
         # 3) 单源独立媒体库（用户在管理页为某个源勾选“作为独立媒体库”）
@@ -1180,29 +1140,6 @@ async def mdb_detail(guid: str, request: Request):
         }
         return JSONResponse({"code": 0, "msg": "", "data": payload})
 
-    if guid in CATALOG_GUID_CAT:
-        cat = CATALOG_GUID_CAT[guid]
-        posters = []
-        try:
-            if catalog.available(cat):
-                posters = [inj._poster(p)
-                           for p in catalog.cached_page_posters(cat, 8)]
-        except Exception:
-            posters = []
-        payload = {
-            "guid": guid,
-            "name": catalogmod.catalog_title(cat),
-            "category": catalogmod.catalog_mdb(cat),
-            "dir_list": [], "lan": "zh-CN", "auto_scrap_subtitle": 0,
-            "include_adult": False, "subtitle_lan": "zh-CN",
-            "poster": posters[0] if posters else "",
-            "poster_type": 0, "posters": posters,
-            "view_type": 0, "last_update_time": 0, "sort_num": 0,
-            "auto_progress_thumb": 0, "skip_filesize": 0,
-            "prefer_local_nfo": 0, "refresh_disabled": True,
-        }
-        return JSONResponse({"code": 0, "msg": "", "data": payload})
-
     # 单源独立媒体库
     sscope = standalone_source_of(guid)
     if sscope and any(s["id"] == sscope for s in standalone_sources_active()):
@@ -1268,13 +1205,6 @@ async def mediadb_sum(request: Request):
             if n:
                 payload["data"][CHART_LIB_GUIDS[cat]] = n
                 total_added += n
-    if catalog_enabled():
-        for cat, _t, _c in catalogmod.CATALOG_CATEGORIES:
-            if catalog.available(cat):
-                n = catalog.total(cat)
-                if n:
-                    payload["data"][CATALOG_LIB_GUIDS[cat]] = n
-                    total_added += n
     for s in standalone_sources_active():
         scope = s["id"]
         if catalog.standalone_available(scope):
@@ -1343,35 +1273,6 @@ async def item_list(request: Request):
         return JSONResponse({"code": 0, "msg": "", "data": {
             "mdb_name": lib_name, "mdb_category": "Mix", "top_dir": "",
             "dir": "", "total": total, "list": rows, "jump_list": None}})
-
-    # —— 海量分类片库：按资源站分类深翻，前端无限滚动逐页请求 ——
-    ccat = CATALOG_GUID_CAT.get(aguid)
-    if ccat is not None:
-        mdb_name = catalogmod.catalog_title(ccat)
-        mdb_cat = catalogmod.catalog_mdb(ccat)
-        if not catalog_enabled() or not catalog.available(ccat):
-            return JSONResponse({"code": 0, "msg": "", "data": {
-                "mdb_name": mdb_name, "mdb_category": mdb_cat, "top_dir": "",
-                "dir": "", "total": 0, "list": [], "jump_list": None}})
-        # 路由表过期则后台重建（不阻塞）
-        if catalog.routes_stale() and not catalog._refreshing:
-            asyncio.create_task(catalog.refresh_routes(config.enabled_sources()))
-        page = int(body.get("page") or body.get("p") or body.get("page_index")
-                   or body.get("pn") or 1)
-        page = max(1, page)
-        page_size = int(body.get("page_size") or 22)
-        page_size = max(1, min(page_size, 100))
-        offset = int(body["offset"]) if body.get("offset") is not None \
-            else (page - 1) * page_size
-        total = catalog.total(ccat)
-        offset = max(0, min(offset, total))
-        briefs = await catalog.get_window(ccat, offset, page_size)
-        rows = _catalog_filter([_catalog_card(b, ccat) for b in briefs], body)
-        rows = clientmod.normalize_cards(rows, client)
-        return JSONResponse({"code": 0, "msg": "", "data": {
-            "mdb_name": mdb_name, "mdb_category": mdb_cat, "top_dir": "",
-            "dir": "", "total": total, "list": rows,
-            "jump_list": None}})
 
     cat = CHART_GUID_CAT.get(aguid)
     if cat is None:
@@ -1468,18 +1369,6 @@ async def item_detail(guid: str, request: Request):
         return JSONResponse({"code": 0, "msg": "", "data": data})
     # TVBox 加固源专区库根节点
     # 小雅分类库：库根节点 + 影片详情
-    # 海量库根节点
-    if guid in CATALOG_GUID_CAT:
-        ccat = CATALOG_GUID_CAT[guid]
-        n = catalog.total(ccat)
-        data = inj._base_item(
-            guid=guid, type="MediaDB", title=catalogmod.catalog_title(ccat),
-            can_play=1, number_of_episodes=n, local_number_of_episodes=n,
-            ancestor_guid="", ancestor_name="", ancestor_category="",
-            poster="", logic_type=0)
-        data["play_item_guid"] = ""
-        data["play_error"] = ""
-        return JSONResponse({"code": 0, "msg": "", "data": data})
     # 榜单虚拟媒体库根节点（进入媒体库时前端会请求 item/<库guid>）。
     # 必须在透传前拦截，否则官方后端返回 -6，页面提示「此媒体库不存在」。
     if guid in CHART_GUID_CAT or is_hot_guid(guid):
@@ -1692,7 +1581,7 @@ def _online_card_meta(guid: str) -> dict | None:
 def _is_online_item_guid(guid: str) -> bool:
     if not guid:
         return False
-    if (guid in CATALOG_GUID_CAT or guid in CHART_GUID_CAT or is_hot_guid(guid)
+    if (guid in CHART_GUID_CAT or is_hot_guid(guid)
             or standalone_source_of(guid) is not None):
         return False  # 媒体库根节点不可收藏
     if store.get_title_by_guid(guid) or store.get_episode(guid):
@@ -3021,6 +2910,16 @@ async def _ensure_playable(picked: dict, request: Request,
     if not picked or not picked.get("online_guid"):
         return picked
     if auto and _autofail_on() and _fastest_on():
+        # 最快线记忆命中：只探这一条，成功即用，省掉整轮竞速（换集/重放秒开）。
+        fast = remembered_fast_line(picked)
+        if fast:
+            cand = next((c for c in _episode_candidates(picked)
+                         if c.get("line") == fast), None)
+            if cand is not None and not _line_is_bad(cand):
+                lat = await _probe_latency(cand, request, build_hls=False)
+                if lat is not None:
+                    _remember_fast(picked, cand["line"])
+                    return cand
         winner = await _race_fastest(picked, request)
         if winner is not None:
             return winner
@@ -3072,7 +2971,7 @@ async def _resolve_if_needed(picked: dict, request: Request) -> dict:
 # 改写后的媒体播放列表短时内存缓存，避免同一集起播/重试反复抓上游。
 # 上游地址带时效签名，TTL 取短；只缓存成功结果。
 _PLAYLIST_CACHE: dict[str, tuple[float, str]] = {}
-_PLAYLIST_TTL = 120.0
+_PLAYLIST_TTL = 600.0
 # 单飞：同一「集+线路」只允许一次在途抓取，预热与真正取 main 共用同一个 Future
 _PLAYLIST_FUT: dict[str, asyncio.Future] = {}
 
@@ -3154,14 +3053,6 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
                     picked["url"] = fresh
     if text is None:
         return None, None
-
-    # m3u8 流层去广告（TVBox/OK影视 Pro rules 引擎 + 通用启发式），在改写分片前执行
-    try:
-        import adfilter as _adfilter
-        if _adfilter.enabled():
-            text, _ad_removed = _adfilter.filter_hls(text, src_url)
-    except Exception:
-        _log.info("hls adfilter failed", exc_info=True)
 
     sel_qs = ""
     if picked.get("line"):
@@ -3292,6 +3183,36 @@ def _warm_playlist(mg: str, picked: dict, request: Request) -> None:
     if key in _PLAYLIST_FUT:
         return  # 已在途
     asyncio.create_task(_get_playlist_cached(mg, picked, request))
+
+
+async def _prewarm_next_episode(picked: dict, request: Request) -> None:
+    """起播成功后后台处理同线路下一集：竞速记住最快线并预热播放列表。"""
+    try:
+        if picked.get("kind") != "episode":
+            return
+        og = picked.get("online_guid")
+        idx = int(picked.get("index") or 0)
+        if not og:
+            return
+        next_eg = episode_guid(og, "", idx + 1)
+        nxt = store.get_episode_target(next_eg, picked.get("line"))
+        if not nxt:
+            return  # 已是最后一集
+        request.state._play_mg = ep_media_guid(next_eg)
+        if _fastest_on() and _autofail_on():
+            await _race_fastest(nxt, request)
+        else:
+            _warm_playlist(ep_media_guid(next_eg), nxt, request)
+    except Exception:
+        pass
+
+
+def _warm_next_episode(picked: dict, request: Request) -> None:
+    """调度下一集预热任务（不阻塞当前响应）。"""
+    try:
+        asyncio.create_task(_prewarm_next_episode(picked, request))
+    except Exception:
+        pass
 
 
 @app.get(f"{ONLINE_PREFIX}/{{mg}}/preset.m3u8")
@@ -3528,6 +3449,7 @@ async def hls_main(mg: str, request: Request):
     _sk = sourcehealth.source_key_of(picked.get("line"), picked)
     if _sk:
         sourcehealth.record(_sk, True)
+    _warm_next_episode(picked, request)
     return Response(body, media_type="application/vnd.apple.mpegurl",
                     headers={"Cache-Control": "no-cache",
                              "Access-Control-Allow-Origin": "*"})
@@ -3817,10 +3739,6 @@ def _virtual_lib_list() -> list[dict]:
         out.append({"guid": CHART_LIB_GUIDS[cat], "title": title,
                     "group": "hot", "enabled": charts_enabled(),
                     "count": len(chart_cache.items(cat))})
-    for cat, title, _c in catalogmod.CATALOG_CATEGORIES:
-        out.append({"guid": CATALOG_LIB_GUIDS[cat], "title": title,
-                    "group": "catalog", "enabled": catalog_enabled() and catalog.available(cat),
-                    "count": catalog.total(cat) if catalog.available(cat) else 0})
     pinned = config.pinned_lib_guids()
     for d in out:
         d["pinned"] = d["guid"] in pinned
@@ -3831,7 +3749,6 @@ def _virtual_lib_list() -> list[dict]:
 async def ext_libs(request: Request):
     return {"code": 0, "msg": "", "data": {
         "hot_enabled": charts_enabled(),
-        "catalog_enabled": catalog_enabled(),
         "libs": _virtual_lib_list()}}
 
 
@@ -3881,11 +3798,11 @@ async def ext_set_config(request: Request):
         "max_per_keyword", "filter_junk", "junk_keywords", "online_first",
         "hot_library_enabled", "hot_library_title", "hot_limit",
         "hot_per_source", "hot_pages_per_source", "hot_refresh_interval",
-        "catalog_library_enabled",
         "prefer_quality_source",
         "line_fastest", "line_fastest_max", "line_fastest_timeout",
         "line_fastest_prefer", "line_autofail",
-        "update_proxy",
+        "lunatv_sync_enabled", "lunatv_sync_preset", "lunatv_sync_url",
+        "lunatv_sync_interval", "lunatv_auto_disable",
     }
     patch = {k: v for k, v in body.items() if k in allowed}
     if "hot_library_title" in patch:
@@ -3899,9 +3816,17 @@ async def ext_set_config(request: Request):
     if "hot_refresh_interval" in patch:
         patch["hot_refresh_interval"] = max(1 * 3600, min(24 * 3600,
                                                           int(patch["hot_refresh_interval"])))
-    if "update_proxy" in patch:
-        pu = str(patch["update_proxy"]).strip()[:300]
-        patch["update_proxy"] = pu if re.match(r"^(https?|socks5h?)://", pu) else ""
+    if "lunatv_sync_preset" in patch:
+        pv = str(patch["lunatv_sync_preset"]).strip()
+        patch["lunatv_sync_preset"] = pv if pv in lunatv.PRESETS else "jin18"
+    if "lunatv_sync_url" in patch:
+        patch["lunatv_sync_url"] = str(patch["lunatv_sync_url"]).strip()[:300]
+    if "lunatv_sync_interval" in patch:
+        patch["lunatv_sync_interval"] = max(1, min(168, int(patch["lunatv_sync_interval"])))
+    if "lunatv_sync_enabled" in patch:
+        patch["lunatv_sync_enabled"] = bool(patch["lunatv_sync_enabled"])
+    if "lunatv_auto_disable" in patch:
+        patch["lunatv_auto_disable"] = bool(patch["lunatv_auto_disable"])
     sources_changed = False
     if "sources" in body and isinstance(body["sources"], list):
         cur = {s["id"]: s for s in config.all_sources()}
@@ -3923,6 +3848,7 @@ async def ext_set_config(request: Request):
         patch["sources"] = list(cur.values())
     config.save(patch)
     _search_cache.clear()
+    _briefs_cache.clear()
     if sources_changed:
         _schedule_routes_refresh()
     return {"code": 0, "msg": "saved"}
@@ -3967,6 +3893,7 @@ async def ext_junk_keywords(request: Request):
     else:
         kws = config.set_junk_keywords(body.get("keywords", []))
     _search_cache.clear()
+    _briefs_cache.clear()
     return {"code": 0, "msg": "saved", "data": {"junk_keywords": kws}}
 
 
@@ -3978,84 +3905,172 @@ def _schedule_routes_refresh():
         pass
 
 
+_lunatv_sync_lock = asyncio.Lock()
+
+
+def _lunatv_sync_conf() -> dict:
+    cfg = config.get()
+    return {
+        "enabled": bool(cfg.get("lunatv_sync_enabled", False)),
+        "preset": str(cfg.get("lunatv_sync_preset") or "jin18"),
+        "url": str(cfg.get("lunatv_sync_url") or ""),
+        "interval": max(1, min(168, int(cfg.get("lunatv_sync_interval") or 12))),
+        "auto_disable": bool(cfg.get("lunatv_auto_disable", True)),
+    }
+
+
+async def lunatv_sync(trigger: str = "manual", preset: str = "", url: str = "",
+                      persist: bool = True, standalone: bool = False) -> dict:
+    """LunaTV 订阅同步：拉取配置 -> 去重 -> 全源测速 -> 入库/自动禁用/恢复。
+
+    新源只有测速通过才入库；已存在的源每次刷新延迟与连续失败计数，
+    连续两轮失败且本轮整体成功率正常时自动禁用（可从管理台恢复）。
+    """
+    if _lunatv_sync_lock.locked():
+        raise lunatv.LunaError("同步正在进行中，请稍后再试")
+    async with _lunatv_sync_lock:
+        sc = _lunatv_sync_conf()
+        preset = (preset or sc["preset"] or "jin18").strip()
+        url = (url or sc["url"] or "").strip()
+        raw_cfg, used_url = await lunatv.fetch_config(preset=preset, url=url)
+        sites = lunatv.parse_sites(raw_cfg)
+
+        by_api = {s.get("api", "").rstrip("/").lower(): s
+                  for s in config.all_sources()}
+        candidates = [s for s in sites
+                      if s["api"].rstrip("/").lower() not in by_api]
+
+        sem = asyncio.Semaphore(12)
+
+        async def _probe(api: str) -> dict:
+            async with sem:
+                try:
+                    return await asyncio.wait_for(
+                        providers.probe_source(api, timeout=6.0), timeout=8)
+                except Exception:
+                    return {"ok": False, "elapsed_ms": 8000, "error": "timeout"}
+
+        # 1) 新源先测速，通过才入库（避免把死源写进配置）
+        new_checked = await asyncio.gather(
+            *[_probe(c["api"]) for c in candidates])
+        good = [c for c, p in zip(candidates, new_checked) if p.get("ok")]
+        added_res = config.add_sources(good, enabled=True,
+                                       standalone=standalone, origin="lunatv")
+
+        # 2) 全部源（含刚入库的新源）测速，记录延迟/失败；
+        #    新源直接复用首轮探测结果，避免同一轮重复请求。
+        first_probe = {c["api"].rstrip("/").lower(): p
+                       for c, p in zip(candidates, new_checked)}
+        sources = config.all_sources()
+        checked = await asyncio.gather(*[
+            asyncio.sleep(0, result=first_probe[s["api"].rstrip("/").lower()])
+            if s["api"].rstrip("/").lower() in first_probe
+            else _probe(s["api"])
+            for s in sources])
+        prev = config.get().get("lunatv_sync_stats") or {}
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        stats: dict[str, dict] = {}
+        failed_names: list[str] = []
+        ok_count = 0
+        lat_sum = 0
+        for s, p in zip(sources, checked):
+            sid = s["id"]
+            ok = bool(p.get("ok"))
+            ms = int(p.get("elapsed_ms") or 0)
+            if ok:
+                ok_count += 1
+                lat_sum += ms
+            fails = 0 if ok else int((prev.get(sid) or {}).get("fails") or 0) + 1
+            stats[sid] = {"ok": ok, "ms": ms, "fails": fails, "at": now_str,
+                          "count": int(p.get("count") or 0),
+                          "error": str(p.get("error") or "")[:60]}
+            if not ok:
+                failed_names.append(s["name"])
+
+        # 3) 自动禁用/恢复。整体大面积失败（如断网）时跳过禁用，避免误伤。
+        auto = bool(sc["auto_disable"])
+        disable_ids: list[str] = []
+        enable_ids: list[str] = []
+        if ok_count:
+            for s in sources:
+                st = stats[s["id"]]
+                if st["ok"]:
+                    if s.get("auto_disabled") and not s.get("enabled"):
+                        enable_ids.append(s["id"])
+                elif auto and s.get("enabled") and st["fails"] >= 2:
+                    disable_ids.append(s["id"])
+        skipped_auto = bool(auto and sources and ok_count * 3 < len(sources))
+        if skipped_auto:
+            disable_ids = []
+        name_of = {s["id"]: s["name"] for s in sources}
+
+        report = {
+            "preset": "custom" if url else preset,
+            "url": used_url,
+            "trigger": trigger,
+            "at": now_str,
+            "ts": time.time(),
+            "total": len(sites),
+            "candidates": len(candidates),
+            "added": len(added_res["added"]),
+            "added_names": added_res["added"][:40],
+            "duplicate": (len(sites) - len(candidates)) + added_res["duplicate"],
+            "probed": len(sources),
+            "ok": ok_count,
+            "failed": len(failed_names),
+            "failed_names": failed_names[:30],
+            "avg_ms": int(lat_sum / ok_count) if ok_count else 0,
+            "disabled": [name_of.get(i, i) for i in disable_ids][:30],
+            "re_enabled": [name_of.get(i, i) for i in enable_ids][:30],
+            "auto_skipped": skipped_auto,
+        }
+        config.apply_sync_result(stats, report, disable_ids, enable_ids)
+        if persist:
+            config.save({"lunatv_sync_preset": preset, "lunatv_sync_url": url})
+        if added_res["added"]:
+            _search_cache.clear()
+            _briefs_cache.clear()
+            _schedule_routes_refresh()
+        return report
+
+
 @app.get("/v/api/ext/lunatv/status")
 async def ext_lunatv_status():
+    cfg = config.get()
     return {"code": 0, "data": {
         "presets": [{"key": k, "label": v[1], "note": v[2]}
                     for k, v in lunatv.PRESETS.items()],
-        "last": config.get().get("lunatv_last_sync") or {},
+        "sync": _lunatv_sync_conf(),
+        "last": cfg.get("lunatv_last_sync") or {},
+        "stats": cfg.get("lunatv_sync_stats") or {},
         "proxy": bool(__import__("subfetch").subscription_proxy()),
+        "syncing": _lunatv_sync_lock.locked(),
     }}
 
 
-@app.post("/v/api/ext/lunatv/import")
-async def ext_lunatv_import(request: Request):
-    """从 LunaTV-config（或自定义 LunaTV/MoonTV 配置地址）拉取源并导入。
+@app.post("/v/api/ext/lunatv/sync")
+async def ext_lunatv_sync(request: Request):
+    """手动触发 LunaTV 同步（拉取+测速）。入参 {preset?, url?, standalone?}。
 
-    入参：{preset?: "jin18"|"jingjian"|"full", url?: 自定义地址,
-           probe?: 是否导入前测活（默认 True）, standalone?: 是否作独立媒体库}
+    手动同步会把所选预设/地址保存为定时任务配置，实现「导入即订阅」。
     """
     try:
         body = await request.json()
     except Exception:
         body = {}
-    preset = str(body.get("preset") or "jin18").strip()
-    url = str(body.get("url") or "").strip()
-    probe = body.get("probe", True) is not False
-    standalone = bool(body.get("standalone"))
-
     try:
-        raw_cfg, used_url = await lunatv.fetch_config(preset=preset, url=url)
-        sites = lunatv.parse_sites(raw_cfg)
+        report = await lunatv_sync(
+            trigger="manual",
+            preset=str(body.get("preset") or "").strip(),
+            url=str(body.get("url") or "").strip(),
+            persist=body.get("save", True) is not False,
+            standalone=bool(body.get("standalone")))
     except lunatv.LunaError as exc:
         return JSONResponse({"code": 400, "msg": str(exc)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"code": 502,
-                             "msg": f"拉取失败：{type(exc).__name__}"},
+                             "msg": f"同步失败：{type(exc).__name__}"},
                             status_code=502)
-
-    existing = {s.get("api", "").rstrip("/").lower()
-                for s in config.all_sources()}
-    candidates = [s for s in sites
-                  if s["api"].rstrip("/").lower() not in existing]
-    failed: list[str] = []
-    if probe and candidates:
-        sem = asyncio.Semaphore(12)
-
-        async def _check(c):
-            async with sem:
-                try:
-                    return c, await asyncio.wait_for(
-                        providers.probe_source(c["api"], timeout=5.0),
-                        timeout=7)
-                except Exception:
-                    return c, {"ok": False}
-
-        checked = await asyncio.gather(*[_check(c) for c in candidates])
-        good = [c for c, p in checked if p.get("ok")]
-        failed = [c["name"] for c, p in checked if not p.get("ok")]
-    else:
-        good = candidates
-
-    result = config.add_sources(good, enabled=True, standalone=standalone)
-    if result["added"]:
-        _search_cache.clear()
-        _schedule_routes_refresh()
-
-    report = {
-        "preset": "custom" if url else preset,
-        "url": used_url,
-        "total": len(sites),
-        "candidates": len(candidates),
-        "added": len(result["added"]),
-        "added_names": result["added"][:40],
-        "duplicate": (len(sites) - len(candidates)) + result["duplicate"],
-        "failed": len(failed),
-        "failed_names": failed[:30],
-        "probed": bool(probe),
-        "at": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    config.save({"lunatv_last_sync": report})
     return {"code": 0, "msg": "", "data": report}
 
 
@@ -4068,6 +4083,7 @@ async def ext_source_add(request: Request):
     if not ok:
         return JSONResponse({"code": 400, "msg": info}, status_code=400)
     _search_cache.clear()
+    _briefs_cache.clear()
     if body.get("standalone"):
         _schedule_routes_refresh()
     return {"code": 0, "msg": "added", "data": {"id": info}}
@@ -4118,6 +4134,7 @@ async def ext_source_delete(request: Request):
     if not ok:
         return JSONResponse({"code": 404, "msg": info}, status_code=404)
     _search_cache.clear()
+    _briefs_cache.clear()
     _schedule_routes_refresh()
     return {"code": 0, "msg": "deleted"}
 
@@ -4126,6 +4143,7 @@ async def ext_source_delete(request: Request):
 async def ext_source_restore(request: Request):
     config.restore_builtin()
     _search_cache.clear()
+    _briefs_cache.clear()
     return {"code": 0, "msg": "restored"}
 
 
@@ -4156,265 +4174,6 @@ async def ext_source_test_all(request: Request):
                                    return_exceptions=True)
     out = [r for r in results if isinstance(r, dict)]
     return {"code": 0, "msg": "", "data": out}
-
-
-@app.post("/v/api/ext/source/import-tvbox")
-async def ext_import_tvbox(request: Request):
-    """导入 TVBox/影视仓/OK影视配置中的标准苹果CMS JSON/XML 源。
-
-    入参：{url?} 或 {text?}，外加 standalone（可选）。对候选源做轻量探测，
-    通过者加入自定义源；爬虫 jar / 网盘 / 直播源跳过。
-    """
-    import tvbox as tvboxmod
-    body = await request.json()
-    standalone = bool(body.get("standalone"))
-    try:
-        if body.get("url"):
-            sites, _subs = await tvboxmod.load_remote(str(body["url"]).strip())
-        elif body.get("text"):
-            cfg = tvboxmod.parse_config_text(str(body["text"]))
-            if not cfg:
-                return JSONResponse({"code": 400, "msg": "无法解析配置（需为 JSON 或其 base64）"},
-                                    status_code=400)
-            sites = tvboxmod.extract_sites(cfg)
-        else:
-            return JSONResponse({"code": 400, "msg": "缺少 url 或 text"}, status_code=400)
-    except Exception as exc:
-        return JSONResponse({"code": 502, "msg": f"获取配置失败：{type(exc).__name__}"},
-                            status_code=502)
-
-    candidates: list[dict] = []
-    seen_api: set[str] = set()
-    skipped: list[str] = []
-    for s in sites:
-        status, norm = tvboxmod.classify_site(s)
-        if not norm:
-            nm = str(s.get("name") or s.get("key") or s.get("api") or "未命名")
-            if nm not in skipped:
-                skipped.append(nm[:20])
-            continue
-        key = norm["api"].rstrip("/").lower()
-        if key in seen_api:
-            continue
-        seen_api.add(key)
-        candidates.append(norm)
-
-    existing = {s.get("api", "").rstrip("/").lower() for s in config.all_sources()}
-    added_names, dup = [], 0
-    # 并发探测，最多导入 40 个可用源，避免一次性拉爆
-    sem = asyncio.Semaphore(8)
-
-    async def check(c):
-        async with sem:
-            try:
-                probe = await asyncio.wait_for(
-                    providers.probe_source(c["api"], timeout=8.0), timeout=10)
-            except Exception:
-                probe = {"ok": False}
-            return c, probe
-
-    checked = await asyncio.gather(*[check(c) for c in candidates[:60]])
-    for c, probe in checked:
-        key = c["api"].rstrip("/").lower()
-        if key in existing:
-            dup += 1
-            continue
-        if not probe.get("ok"):
-            skipped.append(c["name"][:20])
-            continue
-        ok, info = config.add_source(c["name"], c["api"], True, standalone)
-        if ok:
-            added_names.append(c["name"])
-            existing.add(key)
-        else:
-            dup += 1
-        if len(added_names) >= 40:
-            break
-    if added_names:
-        _search_cache.clear()
-        if standalone:
-            _schedule_routes_refresh()
-        else:
-            # 新源加入后也刷新一次聚合路由，便于海量库覆盖
-            _schedule_routes_refresh()
-    return {"code": 0, "msg": "", "data": {
-        "scanned": len(sites),
-        "candidates": len(candidates),
-        "added": len(added_names),
-        "added_names": added_names,
-        "duplicate": dup,
-        "skipped": len(skipped),
-        "skipped_detail": skipped[:40],
-    }}
-
-
-@app.post("/v/api/ext/source/import-subscription")
-async def ext_import_subscription(request: Request):
-    """统一导入 TVBox / 影视仓 / OK影视 订阅（一个入口，自动分类、导入即可用）。
-
-    入参：{url?} 或 {text?}，可选 standalone（CMS 源是否同时作独立媒体库）、
-    enable_guard（True/False/"smart"，默认 "smart"：安全加固源自动启用、
-    P2P/磁力/云盘/需外部配置的风险源导入但默认关）。
-
-    一份订阅一次解析，按运行时分流：
-      - 标准苹果CMS（type 0/1）：轻量探测通过后加入自定义源，立即可搜可播；
-      - csp_*Guard 加固源：写入私有 imported.json 并同步进源底表（仅完整版）；
-      - 其余爬虫 / 网盘 / 直播：跳过并给出原因。
-    返回分类报告 + 加固运行时就绪状态（未就绪时引导一键部署，源仍已登记）。
-    """
-    import tvbox as tvboxmod
-    body = await request.json()
-    standalone = bool(body.get("standalone"))
-    enable_guard = body.get("enable_guard", "smart")
-    if enable_guard not in (True, False, "smart"):
-        enable_guard = "smart"
-
-    try:
-        if body.get("builtin"):
-            # 内置推荐订阅（如一键导入饭太硬）：在 tvbox 内完成多镜像尝试与解密。
-            _builtin = str(body["builtin"]).strip().lower()
-            if _builtin == "fantaiying":
-                raw_sites, _spider, _base, _used = await tvboxmod.load_fantaiying()
-                _subs, _rules = 0, []
-            else:
-                return JSONResponse({"code": 400, "msg": f"未知内置订阅：{_builtin}"},
-                                    status_code=400)
-        elif body.get("url"):
-            raw_sites, _subs, _spider, _base, _rules = await tvboxmod.load_subscription_full(
-                url=str(body["url"]).strip())
-        elif body.get("text"):
-            raw_sites, _subs, _spider, _base, _rules = await tvboxmod.load_subscription_full(
-                text=str(body["text"]))
-        else:
-            return JSONResponse({"code": 400, "msg": "缺少 url 或 text"},
-                                status_code=400)
-    except Exception as exc:
-        return JSONResponse({"code": 502,
-                             "msg": f"获取/解析订阅失败：{type(exc).__name__}"},
-                            status_code=502)
-
-    # 合并订阅自带的 m3u8 去广告规则（TVBox/OK影视 Pro rules），去重持久化
-    ad_rules_added = 0
-    try:
-        import adfilter as _adfilter
-        ad_rules_added = _adfilter.merge_subscription_rules(_rules or [])
-    except Exception:
-        _log.info("merge ad rules failed", exc_info=True)
-
-    groups = tvboxmod.classify_subscription(raw_sites, _spider, _base)
-    cms_cands = groups["cms"]
-    guard_sites = groups["guard"]
-    csp_items = groups.get("csp", [])
-    drpy_items = groups.get("drpy", [])
-    jar_url_global = groups.get("jar_url", "")
-    skipped = list(groups["skipped"])
-
-    # ---------- 苹果 CMS：并发探测，通过即加入并启用 ----------
-    existing = {s.get("api", "").rstrip("/").lower() for s in config.all_sources()}
-    cms_added, cms_dup = [], 0
-    cms_failed: list[str] = []
-    sem = asyncio.Semaphore(8)
-
-    async def _probe(c):
-        async with sem:
-            try:
-                pr = await asyncio.wait_for(
-                    providers.probe_source(c["api"], timeout=8.0), timeout=10)
-            except Exception:
-                pr = {"ok": False}
-            return c, pr
-
-    checked = await asyncio.gather(*[_probe(c) for c in cms_cands[:80]])
-    for c, pr in checked:
-        key = c["api"].rstrip("/").lower()
-        if key in existing:
-            cms_dup += 1
-            continue
-        if not pr.get("ok"):
-            cms_failed.append(c["name"][:20])
-            continue
-        ok, _info = config.add_source(c["name"], c["api"], True, standalone)
-        if ok:
-            cms_added.append(c["name"])
-            existing.add(key)
-        else:
-            cms_dup += 1
-        if len(cms_added) >= 60:
-            break
-    for nm in cms_failed:
-        tag = nm + "|探测不可达"
-        if not any(x.get("name") == nm and x.get("reason") == "探测不可达"
-                   for x in skipped):
-            skipped.append({"name": nm, "reason": "探测不可达"})
-
-    # ---------- csp_*Guard 加固源（仅完整私有构建） ----------
-    guard_report = None
-    runtime = None
-
-    # ---------- 普通 csp_ 爬虫 与 远程 drpyS（仅完整私有构建） ----------
-    csp_report = None
-    drpy_report = None
-
-    if cms_added or (guard_report and guard_report.get("enabled_count")) \
-            or (csp_report and csp_report.get("added")) \
-            or (drpy_report and drpy_report.get("added")):
-        _search_cache.clear()
-        _schedule_routes_refresh()
-
-    return {"code": 0, "msg": "", "data": {
-        "scanned": len(raw_sites),
-        "subscriptions": _subs,
-        "cms": {
-            "candidates": len(cms_cands),
-            "added": len(cms_added),
-            "added_names": cms_added,
-            "duplicate": cms_dup,
-        },
-        "guard": guard_report,
-        "csp": csp_report,
-        "drpy": drpy_report,
-        "runtime": runtime,
-        "skipped": len(skipped),
-        "skipped_detail": skipped[:60],
-        "ad_rules_added": ad_rules_added,
-    }}
-
-
-@app.get("/v/api/ext/adfilter/status")
-async def ext_adfilter_status():
-    """m3u8 去广告状态：总开关 + 动态检测 + 已合并的订阅规则组数/域名数。"""
-    import adfilter as _adf
-    st = _adf.stats()
-    st["dynamic"] = _adf._dynamic_enabled()
-    # 附带各规则组的名称/域名，便于管理页展示
-    st["groups"] = [{"name": g.get("name", ""),
-                     "hosts": g.get("hosts", []),
-                     "regex": len(g.get("regex", []))}
-                    for g in _adf._load_rules()]
-    return {"code": 0, "msg": "", "data": st}
-
-
-@app.post("/v/api/ext/adfilter/toggle")
-async def ext_adfilter_toggle(request: Request):
-    """开关 m3u8 去广告。body: {"enabled":bool} 或 {"enabled":bool,"dynamic":bool}"""
-    import adfilter as _adf
-    body = await request.json()
-    if "dynamic" in body:
-        config.save({"ad_filter_dynamic": bool(body.get("dynamic"))})
-    if "enabled" in body:
-        _adf.set_enabled(bool(body.get("enabled")))
-    return {"code": 0, "msg": "",
-            "data": {"enabled": _adf.enabled(),
-                     "dynamic": _adf._dynamic_enabled()}}
-
-
-@app.post("/v/api/ext/adfilter/rules")
-async def ext_adfilter_replace_rules(request: Request):
-    """整体替换去广告规则（高级）。body: {"rules":[{name,hosts[],regex[]}]}"""
-    import adfilter as _adf
-    body = await request.json()
-    n = _adf.replace_rules(body.get("rules") or [])
-    return {"code": 0, "msg": "", "data": {"groups": n}}
 
 
 @app.get("/v/online-admin")

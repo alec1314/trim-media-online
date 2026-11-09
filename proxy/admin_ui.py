@@ -93,13 +93,6 @@ label.field>span{display:block;color:var(--muted);font-size:12px;margin-bottom:4
   border-radius:5px;padding:0 5px;margin-left:6px}
 .tag.amber{color:#b45309;background:#fef3e2}
 .tag.warn{color:#b45309;background:#fef3e2}
-/* 统一订阅导入结果 */
-.subgrp{border:1px solid var(--line);border-radius:9px;padding:8px 10px;margin:10px 0;background:#fbfcfe}
-.subgrp-t{font-size:13px;font-weight:600;margin-bottom:6px}
-.subrow{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;padding:3px 0}
-.subrow.ok span:first-child{color:var(--ok,#1a8d3a)}
-.subrow.muted{color:var(--muted)}
-
 /* ---------- 表格 ---------- */
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
@@ -185,7 +178,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
       <button class="nav-item" data-page="library">虚拟媒体库</button>
       <button class="nav-item" data-page="quality">片源质量</button>
       <button class="nav-item" data-page="sources">资源站</button>
-      <button class="nav-item" data-page="importsub">导入订阅</button>
+      <button class="nav-item" data-page="importsub">订阅同步</button>
       <button class="nav-item" data-page="search">搜索</button>
       <button class="nav-item" data-page="about">关于</button>
     </nav>
@@ -203,7 +196,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
 
       <div class="card">
         <div class="card-title">虚拟媒体库</div>
-        <p class="card-sub">两个方向：① 各类目热门资源（豆瓣真实榜单，点击搜源播放）；② 海量片库（资源站分类深翻）。</p>
+        <p class="card-sub">① 各类目热门资源：豆瓣真实榜单，点击才搜源播放；② 单源独立库：给某个源单独生成一张按分类深翻的媒体库。</p>
         <div class="lib-grid" id="ovLibs"><div class="muted sm">加载中…</div></div>
       </div>
 
@@ -219,7 +212,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
           <div class="stat"><div class="n" id="ovSrcN">-</div><div class="l">启用资源站</div></div>
           <div class="stat"><div class="n" id="ovCacheN">-</div><div class="l">已缓存在线条目</div></div>
           <div class="stat"><div class="n" id="ovHotN">-</div><div class="l">热门榜单条目</div></div>
-          <div class="stat"><div class="n" id="ovCatN">-</div><div class="l">海量库可用类目</div></div>
+          <div class="stat"><div class="n" id="ovCatN">-</div><div class="l">单源独立库</div></div>
         </div>
         <div class="hint" id="ovHotMeta"></div>
       </div>
@@ -229,7 +222,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
     <!-- ============ 虚拟媒体库 ============ -->
     <section class="page" id="page-library">
       <h2 class="page-title">虚拟媒体库</h2>
-      <p class="page-desc">插件在飞牛影视媒体库中虚拟出的内容。热门榜单与海量片库各自独立开关；每张库卡可单独「置顶」。</p>
+      <p class="page-desc">插件在飞牛影视媒体库中虚拟出的内容。榜单四库可开关；单源独立库随源配置生成。每张库卡可单独「置顶」。</p>
 
       <div class="card">
         <div class="card-title">① 热门资源（各类目真实榜单）</div>
@@ -239,7 +232,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
         <label class="switch-row">
           <input type="checkbox" id="hotEnabled"/>
           <span>在飞牛影视媒体库显示热门四库
-            <span class="sub">🎬热门电影 · 📺热门剧集 · 🌸动漫新番 · 🎤热门综艺（独立开关，不影响海量四库）</span></span>
+            <span class="sub">🎬热门电影 · 📺热门剧集 · 🌸动漫新番 · 🎤热门综艺（独立开关，不影响单源独立库）</span></span>
         </label>
         <label class="field" style="max-width:240px">
           <span>榜单自动刷新间隔（小时，1–24）</span>
@@ -253,18 +246,10 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
       </div>
 
       <div class="card">
-        <div class="card-title">② 海量片库（资源站分类深翻）</div>
-        <p class="card-sub">直接按苹果 CMS 分类深翻资源站，跨源聚合成「🌐海量片库」四库（电影 / 剧集 / 动漫 / 综艺），规则不变。</p>
-        <div class="lib-grid" id="catLibs"></div>
-        <label class="switch-row">
-          <input type="checkbox" id="catEnabled"/>
-          <span>在飞牛影视媒体库显示海量四库
-            <span class="sub">🎞海量电影 · 📺海量剧集 · 🌸海量动漫 · 🎤海量综艺（独立开关，不影响热门四库）</span></span>
-        </label>
-        <div class="btn-row">
-          <button class="primary small" onclick="saveCatCfg()">保存海量设置</button>
-        </div>
-        <div class="hint">海量库在分类路由建立后自动出现；也可在「资源站」页把某个站单独生成一张媒体库卡片。</div>
+        <div class="card-title">② 单源独立媒体库</div>
+        <p class="card-sub">在「资源站」页给某个源勾选「独立库」，该源会单独生成一张媒体库卡片：按该源苹果 CMS 分类深翻，与榜单四库互不影响。</p>
+        <div class="lib-grid" id="catLibs"><div class="muted sm">暂无独立库</div></div>
+        <div class="hint">独立库在分类路由建立后自动出现（约 1-2 分钟）；分类路由每 6 小时重建一次。</div>
       </div>
     </section>
 
@@ -298,26 +283,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
     <!-- ============ 资源站 ============ -->
     <section class="page" id="page-sources">
       <h2 class="page-title">资源站</h2>
-      <p class="page-desc">标准苹果 CMS 源与扩展源；启用后进入聚合搜索与海量片库。</p>
-      <div class="card">
-        <div class="card-title">LunaTV 一键拉源 <span class="badge" id="lunaBadge">未同步</span>
-          <button class="small" style="margin-left:auto" onclick="loadLunaStatus()">刷新状态</button>
-        </div>
-        <p class="card-sub">从 <code>hafrey1/LunaTV-config</code> 拉取现成的苹果 CMS 源清单，自动去重导入；也可粘贴任意 LunaTV / MoonTV 配置地址（JSON 或 Base58 <code>.txt</code>）。抓取走「导入订阅」页配置的订阅代理。请仅接入你有权访问的接口。</p>
-        <div class="row" style="display:grid;grid-template-columns:190px 1fr 130px auto;gap:10px;align-items:center">
-          <select id="lunaPreset">
-            <option value="jin18">精简版（推荐）</option>
-            <option value="jingjian">精简+</option>
-            <option value="full">完整版</option>
-          </select>
-          <input type="text" id="lunaUrl" placeholder="可选：自定义配置 URL，留空使用上方预设"/>
-          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
-            <input type="checkbox" id="lunaProbe" checked style="width:15px;height:15px;accent-color:var(--accent)"/>导入前测活</label>
-          <button class="primary small" style="justify-content:center" onclick="lunaImport(this)">拉取并导入</button>
-        </div>
-        <div class="hint" id="lunaMsg">尚未同步。拉取结果会显示在这里。</div>
-      </div>
-
+      <p class="page-desc">标准苹果 CMS 源；启用后进入聚合搜索、榜单搜源与单源独立库。</p>
       <div class="card">
         <div class="card-title">资源站列表 <span class="badge" id="srcCount"></span>
           <button class="small" style="margin-left:auto" onclick="testAll()">全部测速</button>
@@ -338,8 +304,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
           <button class="primary small" style="justify-content:center" onclick="addSource()">添加</button>
         </div>
         <div class="hint">「独立库」= 该站单独生成一张媒体库卡片；「非过滤」= 不按标题/备注过滤解说/预告/花絮。
-          本项目不内置任何源：请在上方添加你自行获取的苹果 CMS V10 JSON 接口（格式见项目 README），
-          或用左侧「导入订阅」从 TVBox 配置批量导入。请仅接入你有权访问的接口。</div>
+          本项目不内置任何源：请在上方添加你自行获取的苹果 CMS V10 JSON 接口，或到「订阅同步」页从 LunaTV 配置定时拉取。请仅接入你有权访问的接口。</div>
       </div>
 
       <div class="card">
@@ -356,15 +321,50 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
       </div>
     </section>
 
-    <!-- ============ 导入 TVBox 订阅（独立页） ============ -->
+    <!-- ============ 订阅同步（LunaTV 定时拉源+测速） ============ -->
     <section class="page" id="page-importsub">
-      <h2 class="page-title">导入订阅</h2>
-      <p class="page-desc">粘贴一个 TVBox / 影视仓 / OK影视 订阅 URL 或整段配置，自动识别并分类导入，<strong>导入即可在搜索与播放源中使用</strong>。支持 base64 与多订阅聚合。</p>
+      <h2 class="page-title">订阅同步</h2>
+      <p class="page-desc">从 <code>hafrey1/LunaTV-config</code> 定时拉取苹果 CMS 源清单：自动去重、逐个测速、可用源自动入库；连续两轮失败的源自动禁用（可在资源站页恢复）。也可填写任意 LunaTV / MoonTV 配置地址（JSON / Base58 / Base64）。请仅接入你有权访问的接口。</p>
+
+      <div class="card">
+        <div class="card-title">LunaTV 定时同步 <span class="badge" id="lunaBadge">未同步</span>
+          <button class="small" style="margin-left:auto" onclick="loadLunaStatus()">刷新状态</button></div>
+        <div class="row" style="display:grid;grid-template-columns:190px 1fr;gap:10px;align-items:center">
+          <select id="lunaPreset" onchange="saveLunaCfg()">
+            <option value="jin18">精简版（推荐）</option>
+            <option value="jingjian">精简+</option>
+            <option value="full">完整版</option>
+          </select>
+          <input type="text" id="lunaUrl" placeholder="可选：自定义配置 URL，留空使用上方预设" onchange="saveLunaCfg()"/>
+        </div>
+        <div class="row" style="display:grid;grid-template-columns:130px 150px 1fr auto;gap:10px;align-items:center;margin-top:10px">
+          <label class="switch-row" style="margin:0">
+            <input type="checkbox" id="lunaSyncEnable" onchange="saveLunaCfg()"/><span>定时同步</span></label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px">每
+            <input type="number" id="lunaInterval" min="1" max="168" style="width:64px" onchange="saveLunaCfg()"/> 小时</label>
+          <label class="switch-row" style="margin:0">
+            <input type="checkbox" id="lunaAutoDisable" onchange="saveLunaCfg()"/><span>死源自动禁用</span></label>
+          <button class="primary small" style="justify-content:center" onclick="lunaSyncNow(this)">立即同步</button>
+        </div>
+        <div class="hint" id="lunaMsg">尚未同步。点「立即同步」拉取配置并测速。</div>
+        <div id="lunaReport" class="muted sm" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">测速结果
+          <span class="hint" style="font-weight:400">按延迟排序；延迟为苹果CMS接口响应时间</span></div>
+        <table>
+          <thead><tr><th>源</th><th style="width:90px">状态</th><th style="width:90px">延迟</th>
+            <th style="width:90px">结果数</th><th style="width:80px">连续失败</th></tr></thead>
+          <tbody id="lunaRows"><tr><td colspan="5" class="muted">尚未测速。</td></tr></tbody>
+        </table>
+      </div>
+
       <div class="card">
         <div class="card-title">订阅抓取代理（可选）
           <label style="float:right;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:400;cursor:pointer">
             <input type="checkbox" id="subProxyEnable" style="width:14px;height:14px;accent-color:var(--accent)" onchange="onSubProxyToggle()"/> 启用代理</label></div>
-        <p class="card-sub">仅用于<strong>拉取订阅配置、爬虫 jar、DRPY 脚本</strong>（GitHub 等被墙/解析失败时可走 Clash）。<strong>播放、搜索、CMS 探测一律不走此代理</strong>。形如 <code>http://用户:密码@主机:端口</code>，清空=直连。</p>
+        <p class="card-sub">仅用于<strong>拉取 LunaTV 配置</strong>（GitHub 等被墙/解析失败时可走 Clash）。<strong>播放、搜索、CMS 探测一律不走此代理</strong>。形如 <code>http://用户:密码@主机:端口</code>，清空=直连。</p>
         <div class="row">
           <input type="text" id="subProxyUrl" placeholder="http://Clash:密码@192.168.x.x:7890" style="flex:2" disabled/>
           <button class="small" id="subProxySaveBtn" onclick="saveSubProxy(true)" disabled>保存并测试</button>
@@ -372,37 +372,6 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
         </div>
         <div id="subProxyMsg" class="muted sm" style="margin-top:6px"></div>
       </div>
-      <div class="card">
-        <div class="card-title">🛡 播放去广告（m3u8 流层）
-          <label style="float:right;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:400;cursor:pointer">
-            <input type="checkbox" id="adfEnable" style="width:14px;height:14px;accent-color:var(--accent)" onchange="toggleAdfilter(this.checked)"/> 启用去广告</label></div>
-        <p class="card-sub">播放时实时检测当前线路并去除广告，兼容 TVBox / OK影视 Pro：<strong>① 动态检测</strong>——按分片间断边界、切片时长模式、CDN 切换、片头/片中位置实时识别广告段（无需订阅自带规则）；<strong>② 订阅 rules</strong>——导入订阅时自动收录其去广告正则，按线路域名精准剥除；<strong>③ 选集过滤</strong>——剔除“关注公众号/加微信/下载APP”假选集。识别不确定或可能误伤时自动保留，不影响播放。</p>
-        <div style="margin:6px 0">
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
-            <input type="checkbox" id="adfDynamic" style="width:14px;height:14px;accent-color:var(--accent)" onchange="toggleAdfilterDynamic(this.checked)"/>
-            播放时动态检测（识别订阅未提供规则的广告段）</label>
-        </div>
-        <div id="adfStatus" class="muted sm" style="margin-top:6px">正在加载去广告规则…</div>
-      </div>
-      <div class="card">
-        <div class="card-title">TVBox / 影视仓 / OK影视 订阅</div>
-        <p class="card-sub">自动识别并分类：标准苹果CMS影视站（type 0/1）
-          能直接播放的<strong>自动启用</strong>；P2P/磁力/云盘等慢源与 jar/脚本暂未就绪的源导入后默认关闭，可在结果里开启或补传；
-          网盘/直播/无法识别的源跳过并说明原因。</p>
-        <div class="row"><input type="text" id="subUrl" placeholder="配置订阅 URL（支持 base64 与多订阅聚合）" style="flex:2"/>
-          <button class="primary small" onclick="importSubscription('url')">按 URL 导入</button>
-        </div>
-        <label class="field"><textarea id="subText" rows="7" placeholder="或直接粘贴配置 JSON（含 sites 数组）…"></textarea></label>
-        <div class="btn-row">
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
-            <input type="checkbox" id="subStandalone" style="width:15px;height:15px;accent-color:var(--accent)"/>
-            苹果CMS源同时「作为独立媒体库」</label>
-          <button class="primary small" onclick="importSubscription('text')">解析并导入</button>
-        </div>
-        <div id="subResult"></div>
-      </div>
-
-
     </section>
 
 
@@ -465,7 +434,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
         <p class="card-sub">在原生搜索 / 媒体库注入在线影视并直接调用飞牛原生播放器播放。</p>
         <div class="stack sm muted">
           <div>· 热门资源：豆瓣真实榜单四库，点击搜源、优先高质量源播放。</div>
-          <div>· 海量片库：苹果 CMS 分类深翻，跨源聚合成海量四库与单源独立库。</div>
+          <div>· 订阅同步：定时从 LunaTV 配置拉取源、逐个测速并自动清理死源。</div>
         </div>
         <div class="hint" id="aboutEdition"></div>
       </div>
@@ -517,8 +486,7 @@ async function switchPage(page){
   if(page==="library"){loadLibs().then(renderLibrary);}
   if(page==="quality")renderQuality();
   if(page==="sources"){try{loadHealth();}catch(e){}try{loadLunaStatus();}catch(e){}}
-  if(page==="tvbox"){try{loadGuardZone();}catch(e){}try{gbInit();}catch(e){}}
-  if(page==="importsub"){try{if(!CFG)await loadStatus();}catch(e){}try{if(typeof initSubProxy==="function")initSubProxy();}catch(e){}try{loadAdfilter();}catch(e){}try{if(typeof loadSpiderMgmt==="function")loadSpiderMgmt();}catch(e){}try{if(typeof loadDrpyMgmt==="function")loadDrpyMgmt();}catch(e){}}
+  if(page==="importsub"){try{if(!CFG)await loadStatus();}catch(e){}try{if(typeof initSubProxy==="function")initSubProxy();}catch(e){}try{loadLunaStatus();}catch(e){}}
   if(page==="about"){}
 }
 $$("[data-page]").forEach(b=>b.addEventListener("click",()=>switchPage(b.dataset.page)));
@@ -548,8 +516,7 @@ function renderOverview(){
   $("ovSrcN").textContent=CFG.sources.filter(s=>s.enabled).length;
   $("ovCacheN").textContent=STATUS.cached_titles||0;
   $("ovHotN").textContent=hotN;
-  const cats=(STATUS.catalog&&STATUS.catalog.categories)||{};
-  $("ovCatN").textContent=Object.values(cats).filter(x=>x.routes>0).length+"/4";
+  $("ovCatN").textContent=((CFG&&CFG.sources)||[]).filter(x=>x.standalone).length;
   $("ovHotMeta").textContent=(STATUS.charts&&STATUS.charts.refreshing?"正在刷新…":"最近刷新："+fmtTs(STATUS.charts&&STATUS.charts.updated_at))
     +` · 电影${c.movie||0}/剧${c.tv||0}/动漫${c.anime||0}/综艺${c.variety||0}`
     +(STATUS.charts&&STATUS.charts.last_error?(" · "+STATUS.charts.last_error):"");
@@ -558,7 +525,7 @@ function renderOverview(){
 function libCards(chartCounts,cats){
   const hot=[["🎬","热门电影",chartCounts.movie||0],["📺","热门剧集",chartCounts.tv||0],
     ["🌸","动漫新番",chartCounts.anime||0],["🎤","热门综艺",chartCounts.variety||0]];
-  const catMap={movie:"海量电影",tv:"海量剧集",anime:"海量动漫",variety:"海量综艺"};
+  const catMap={movie:"在线电影",tv:"在线剧集",anime:"在线动漫",variety:"在线综艺"};
   const cat=[["🌐",catMap.movie,(cats.movie||{}).routes||0],["🌐",catMap.tv,(cats.tv||{}).routes||0],
     ["🌐",catMap.anime,(cats.anime||{}).routes||0],["🌐",catMap.variety,(cats.variety||{}).routes||0]];
   const item=(arr,label)=>arr.map(([ic,t,n])=>
@@ -570,7 +537,6 @@ function libCards(chartCounts,cats){
 let LIBS=[];
 async function loadLibs(){
   try{const r=await jget("/v/api/ext/libs");LIBS=(r.data&&r.data.libs)||[];
-    if($("catEnabled"))$("catEnabled").checked=!!(r.data&&r.data.catalog_enabled);
   }catch(e){LIBS=[];}
 }
 function catKeyOf(title){
@@ -595,20 +561,26 @@ async function togglePin(guid,el){
 function renderLibrary(){
   if(!STATUS)return;
   $("hotEnabled").checked=CFG.hot_library_enabled!==false;
-  if($("catEnabled"))$("catEnabled").checked=CFG.catalog_library_enabled!==false;
   $("hotInterval").value=Math.round((CFG.hot_refresh_interval||21600)/3600);
   const c=STATUS.charts&&STATUS.charts.counts||{};
-  const cats=(STATUS.catalog&&STATUS.catalog.categories)||{};
   const hotIc={movie:"🎬",tv:"📺",anime:"🌸",variety:"🎤"};
   if(LIBS.length){
     $("hotLibs").innerHTML=LIBS.filter(x=>x.group==="hot").map(L=>libCardHtml(L,hotIc[catKeyOf(L.title)]||"🔥")).join("");
-    $("catLibs").innerHTML=LIBS.filter(x=>x.group==="catalog").map(L=>libCardHtml(L,"🌐")).join("");
   }else{
     $("hotLibs").innerHTML=[["movie","🎬","热门电影",c.movie||0],["tv","📺","热门剧集",c.tv||0],["anime","🌸","动漫新番",c.anime||0],["variety","🎤","热门综艺",c.variety||0]]
         .map(([k,ic,t,n])=>`<div class="lib"><div class="ic">${ic}</div><div><div class="t">${t}</div><div class="c">${n} 条</div></div></div>`).join("");
-    $("catLibs").innerHTML=[["movie","🌐海量电影"],["tv","🌐海量剧集"],["anime","🌐海量动漫"],["variety","🌐海量综艺"]]
-      .map(([k,t])=>{const n=(cats[k]||{}).routes||0;
-        return `<div class="lib"><div class="ic">🌐</div><div><div class="t">${t}</div><div class="c">${n?("路由 "+n):"建库中…"}</div></div></div>`;}).join("");
+  }
+  const stand=((CFG&&CFG.sources)||[]).filter(x=>x.standalone);
+  const sc=(STATUS.catalog&&STATUS.catalog.standalone)||{};
+  if(stand.length){
+    $("catLibs").innerHTML=stand.map(x=>{
+      const cats2=sc[x.id]||{};
+      const n=Object.values(cats2).filter(v=>v>0).length;
+      return `<div class="lib"><div class="ic">📡</div><div><div class="t">${esc(x.name)}</div>
+        <div class="c">${n?("类目 "+n+"/4"):"建库中…"}</div></div></div>`;
+    }).join("");
+  }else{
+    $("catLibs").innerHTML='<div class="muted sm">暂无独立库（在资源站页勾选「独立库」）</div>';
   }
   $("hotStatus").textContent=(STATUS.charts&&STATUS.charts.refreshing?"正在后台刷新榜单…":"最近刷新："+fmtTs(STATUS.charts&&STATUS.charts.updated_at))
     +` · 数据源 ${(STATUS.charts&&STATUS.charts.provider_ok)||0}/${(STATUS.charts&&STATUS.charts.provider_total)||0}`
@@ -621,12 +593,6 @@ async function saveHotCfg(){
     hot_refresh_interval:Math.max(1,Math.min(24,parseInt($("hotInterval").value)||6))*3600};
   const r=await jpost("/v/api/ext/config",body);
   if(r.code===0){Object.assign(CFG,body);toast("热门设置已保存");await loadLibs();renderLibrary();}else toast(r.msg||"保存失败","fail");
-}
-async function saveCatCfg(){
-  const body={catalog_library_enabled:$("catEnabled").checked};
-  const r=await jpost("/v/api/ext/config",body);
-  if(r.code===0){Object.assign(CFG,body);toast("海量四库设置已保存");await loadLibs();renderLibrary();}
-  else toast(r.msg||"保存失败","fail");
 }
 async function refreshHot(){
   toast("开始刷新榜单…");
@@ -675,7 +641,7 @@ function renderSources(){
   const srcs=CFG.sources;
   $("srcCount").textContent=srcs.filter(x=>x.enabled).length+"/"+srcs.length+" 启用";
   if(!srcs.length){
-    $("srcRows").innerHTML='<tr><td colspan="6" class="muted">尚未添加任何资源站——请先在下方粘贴苹果 CMS V10 JSON 接口并点「添加」。未配置源时，在线搜索、热门榜单与海量分类库均无内容。</td></tr>';
+    $("srcRows").innerHTML='<tr><td colspan="6" class="muted">尚未添加任何资源站——请先在下方粘贴苹果 CMS V10 JSON 接口并点「添加」。未配置源时，在线搜索与热门榜单均无内容。</td></tr>';
     return;
   }
   $("srcRows").innerHTML=srcs.map(src=>{
@@ -772,38 +738,75 @@ async function addSource(){
     await loadStatus();const tr=$("srcRows").querySelector(`tr[data-id="${r.data.id}"]`);if(tr&&!standalone)testOne(r.data.id,tr);}
   else toast(r.msg||"添加失败","fail");
 }
-// ---------- LunaTV 一键拉源 ----------
-function lunaSyncText(d){
-  let s=`已添加 ${d.added} 个源（配置共 ${d.total}，已存在 ${d.duplicate}`;
-  if(d.probed)s+=`，测活失败 ${d.failed}`;
-  s+=`）`;
-  if(d.failed_names&&d.failed_names.length)s+=`；失败：${d.failed_names.slice(0,6).join("、")}${d.failed_names.length>6?" 等":""}`;
+// ---------- LunaTV 定时同步 ----------
+function lunaReportText(d){
+  let s=`新增 ${d.added||0} 个源（配置共 ${d.total||0}，已存在 ${d.duplicate||0}）`;
+  s+=`；测速 ${d.probed||0} 个，正常 ${d.ok||0}，失败 ${d.failed||0}`;
+  if(d.avg_ms)s+=`，平均延迟 ${d.avg_ms}ms`;
+  if((d.disabled||[]).length)s+=`；自动禁用：${d.disabled.slice(0,6).join("、")}${d.disabled.length>6?" 等":""}`;
+  if((d.re_enabled||[]).length)s+=`；恢复：${d.re_enabled.slice(0,6).join("、")}`;
+  if(d.auto_skipped)s+="；本轮整体失败过多，已跳过自动禁用";
   return s;
+}
+function renderLunaRows(stats){
+  const box=$("lunaRows");if(!box)return;
+  const srcs=(CFG&&CFG.sources)||[];
+  const rows=srcs.map(s=>({s,st:(stats||{})[s.id]||null}));
+  if(!rows.some(r=>r.st)){box.innerHTML='<tr><td colspan="5" class="muted">尚未测速。点「立即同步」。</td></tr>';return;}
+  rows.sort((a,b)=>{
+    const ao=a.st?(a.st.ok?0:2):1,bo=b.st?(b.st.ok?0:2):1;
+    if(ao!==bo)return ao-bo;
+    return ((a.st&&a.st.ms)||9e9)-((b.st&&b.st.ms)||9e9);
+  });
+  box.innerHTML=rows.map(({s,st})=>{
+    const cls=st?(st.ok?"ok":"bad"):"wait";
+    const badge=st?(st.ok?"正常":(st.fails>=2?"连续失败":"失败")):"未测";
+    const tags=(s.auto_disabled?' <span class="tag warn">自动禁用</span>':"")+(s.enabled?"":(s.auto_disabled?"":' <span class="tag">已停用</span>'));
+    return `<tr><td>${esc(s.name)}${tags}</td><td class="st ${cls}">${badge}</td>
+      <td>${st&&st.ms?st.ms+"ms":"—"}</td><td>${st?st.count:"—"}</td><td>${st?st.fails:"—"}</td></tr>`;
+  }).join("");
 }
 async function loadLunaStatus(){
   try{
     const r=await jget("/v/api/ext/lunatv/status");
-    const d=r.data||{},last=d.last||{};
-    $("lunaBadge").textContent=last.at?("上次 "+last.at):"未同步";
-    $("lunaMsg").textContent=last.at
-      ? (lunaSyncText(last)+" · "+(last.probed?"已测活":"未测活")+(d.proxy?" · 经订阅代理":" · 直连"))
-      : "尚未同步。拉取结果会显示在这里。";
+    const d=r.data||{},s=d.sync||{},last=d.last||{};
+    const ps=$("lunaPreset"),pu=$("lunaUrl");
+    if(ps)ps.value=s.preset||"jin18";
+    if(pu&&document.activeElement!==pu)pu.value=s.url||"";
+    if($("lunaSyncEnable"))$("lunaSyncEnable").checked=!!s.enabled;
+    if($("lunaInterval"))$("lunaInterval").value=s.interval||12;
+    if($("lunaAutoDisable"))$("lunaAutoDisable").checked=s.auto_disable!==false;
+    if($("lunaBadge"))$("lunaBadge").textContent=last.at?("上次 "+last.at.slice(5,16)):"未同步";
+    if($("lunaMsg"))$("lunaMsg").textContent=last.at?lunaReportText(last):"尚未同步。点「立即同步」拉取配置并测速。";
+    if($("lunaReport"))$("lunaReport").textContent=last.at?("触发："+(last.trigger==="schedule"?"定时":"手动")+" · 配置："+(last.url||last.preset||"")+" · 同步中："+(d.syncing?"是":"否")):"";
+    renderLunaRows(d.stats||{});
   }catch(e){}
 }
-async function lunaImport(btn){
-  const preset=$("lunaPreset").value,url=$("lunaUrl").value.trim(),probe=$("lunaProbe").checked;
+async function saveLunaCfg(){
+  const body={
+    lunatv_sync_enabled:$("lunaSyncEnable").checked,
+    lunatv_sync_preset:$("lunaPreset").value,
+    lunatv_sync_url:$("lunaUrl").value.trim(),
+    lunatv_sync_interval:Math.max(1,Math.min(168,parseInt($("lunaInterval").value)||12)),
+    lunatv_auto_disable:$("lunaAutoDisable").checked,
+  };
+  const r=await jpost("/v/api/ext/config",body);
+  if(r.code===0){Object.assign(CFG,body);toast("同步设置已保存");}
+  else toast(r.msg||"保存失败","fail");
+}
+async function lunaSyncNow(btn){
   const old=btn.textContent;
-  btn.disabled=true;btn.textContent="拉取中…";
-  $("lunaMsg").textContent="正在从 GitHub 拉取配置"+(probe?"并测活，源较多时可能需要数十秒…":"…");
+  btn.disabled=true;btn.textContent="同步中…";
+  $("lunaMsg").textContent="正在拉取配置并逐个测速，源较多时可能需要 1-2 分钟…";
   try{
-    const r=await jpost("/v/api/ext/lunatv/import",{preset,url,probe});
-    if(r.code!==0){$("lunaMsg").textContent=r.msg||"导入失败";toast(r.msg||"导入失败","fail");return;}
+    const r=await jpost("/v/api/ext/lunatv/sync",{
+      preset:$("lunaPreset").value,url:$("lunaUrl").value.trim()});
+    if(r.code!==0){$("lunaMsg").textContent=r.msg||"同步失败";toast(r.msg||"同步失败","fail");return;}
     const d=r.data||{};
-    $("lunaMsg").textContent=lunaSyncText(d)+` · ${d.at||""}`;
-    toast(d.added?`已导入 ${d.added} 个源`:"没有新增源（已全部存在）",
-          d.added?"ok":"fail");
+    $("lunaMsg").textContent=lunaReportText(d)+" · "+d.at;
+    toast(d.added?`已新增 ${d.added} 个源`:"测速完成，无新增源","ok");
     await loadStatus();renderSources();await loadLunaStatus();
-  }catch(e){$("lunaMsg").textContent="导入失败："+e;toast("导入失败："+e,"fail");}
+  }catch(e){$("lunaMsg").textContent="同步失败："+e;toast("同步失败："+e,"fail");}
   finally{btn.disabled=false;btn.textContent=old;}
 }
 
@@ -847,187 +850,6 @@ async function clearSubProxy(){
     $("subProxyUrl").disabled=true;$("subProxySaveBtn").disabled=true;$("subProxyClearBtn").disabled=true;
     $("subProxyMsg").textContent="已清空，当前直连";$("subProxyMsg").style.color="";toast("已切回直连");}
   else toast(r.msg||"失败","fail");
-}
-async function loadAdfilter(){
-  const box=$("adfStatus"), cb=$("adfEnable");
-  try{
-    const r=await jget("/v/api/ext/adfilter/status");
-    if(r.code!==0){box.textContent="去广告状态读取失败";return;}
-    const d=r.data||{};
-    if(cb)cb.checked=!!d.enabled;
-    const dyn=$("adfDynamic"); if(dyn)dyn.checked=d.dynamic!==false;
-    let h="";
-    if(d.enabled) h+='<span style="color:var(--ok,#3a9)">● 已启用</span>　';
-    else h+='<span class="muted">○ 已关闭</span>　';
-    h+="已收录订阅规则 <b>"+(d.rule_groups||0)+"</b> 组 / 域名 "+(d.hosts||[]).length
-       +" 个 / 规则 "+(d.regex_count||0)+" 条";
-    if((d.groups||[]).length){
-      h+='<div class="muted sm" style="margin-top:6px">覆盖域名：'
-        +d.groups.map(g=>esc((g.name||"")+"("+(g.hosts||[]).join(",")+")")).slice(0,12).join("、")
-        +(d.groups.length>12?" 等":"")+'</div>';
-    }else{
-      h+='<div class="muted sm" style="margin-top:6px">尚无订阅自带规则；仍会通用清理标准广告标记。导入带 rules 的订阅后自动收录。</div>';
-    }
-    box.innerHTML=h;
-  }catch(e){box.textContent="去广告状态读取失败："+esc(String(e));}
-}
-async function toggleAdfilter(on){
-  try{
-    const r=await jpost("/v/api/ext/adfilter/toggle",{enabled:!!on});
-    if(r.code===0){toast(on?"已开启播放去广告":"已关闭播放去广告");loadAdfilter();}
-    else{toast(r.msg||"操作失败","fail");}
-  }catch(e){toast(String(e),"fail");}
-}
-async function toggleAdfilterDynamic(on){
-  try{
-    const r=await jpost("/v/api/ext/adfilter/toggle",{dynamic:!!on});
-    if(r.code===0){toast(on?"已开启播放时动态检测":"已关闭动态检测");loadAdfilter();}
-    else toast(r.msg||"操作失败","fail");
-  }catch(e){toast(String(e),"fail");}
-}
-async function importSubscription(kind){
-  const standalone=$("subStandalone").checked;
-  const payload={standalone:standalone,enable_guard:"smart"};
-  if(kind==="url"){payload.url=$("subUrl").value.trim();if(!payload.url){toast("请填写订阅 URL","fail");return;}}
-  else{payload.text=$("subText").value.trim();if(!payload.text){toast("请粘贴配置 JSON","fail");return;}}
-  const out=$("subResult");out.innerHTML='<div class="muted sm">正在解析订阅并探测源，请稍候…</div>';
-  try{
-    const r=await jpost("/v/api/ext/source/import-subscription",payload);
-    if(r.code!==0){out.innerHTML='<div class="hint" style="color:var(--danger)">导入失败：'+esc(r.msg||"")+'</div>';return;}
-    renderSubResult(r.data||{});
-    toast("导入完成");
-    try{loadAdfilter();}catch(e){}
-    try{await loadStatus();}catch(e){}
-    try{await loadGuard();}catch(e){}
-    try{await loadSpiderMgmt();}catch(e){}
-    try{await loadDrpyMgmt();}catch(e){}
-  }catch(e){out.innerHTML='<div class="hint" style="color:var(--danger)">导入出错：'+esc(String(e))+'</div>';}
-}
-async function subToggleGuard(key,on){
-  try{
-    const r=await jpost("/v/api/ext/guard/toggle",{key,enabled:!!on});
-    if(r.code===0){toast(on?"已启用":"已停用");try{await loadStatus();}catch(e){}}
-    else toast(r.msg||"操作失败","fail");
-  }catch(e){toast(String(e),"fail");}
-}
-async function importFantaiying(){
-  const btn=$("btnImportFty"), out=$("subResult");
-  if(btn){btn.disabled=true;btn.style.opacity=".6";btn.style.cursor="wait";}
-  const t0=Date.now();
-  out.innerHTML='<div class="muted sm">正在拉取内置「饭太硬」官方订阅（已内置爬虫 jar，多镜像自动切换、自动解密），请稍候…<span id="ftyWait"></span></div>';
-  // 超过 8 秒给“仍在进行”反馈，避免误以为点击无反应
-  const waitTimer=setInterval(()=>{const w=$("ftyWait");if(w)w.textContent="（已等待 "+Math.round((Date.now()-t0)/1000)+" 秒，源站慢时请耐心，勿重复点击）";},8000);
-  try{
-    const r=await jpost("/v/api/ext/source/import-subscription",
-      {builtin:"fantaiying",standalone:$("subStandalone").checked,enable_guard:"smart"});
-    clearInterval(waitTimer);
-    if(r.code!==0){out.innerHTML='<div class="hint" style="color:var(--danger)">导入失败：'+esc(r.msg||"")+'</div>';return;}
-    renderSubResult(r.data||{});
-    toast("饭太硬导入完成（耗时 "+Math.round((Date.now()-t0)/1000)+" 秒）");
-    try{loadAdfilter();}catch(e){}
-    try{await loadStatus();}catch(e){}
-    try{await loadGuard();}catch(e){}
-    try{await loadSpiderMgmt();}catch(e){}
-    try{await loadDrpyMgmt();}catch(e){}
-  }catch(e){
-    clearInterval(waitTimer);
-    out.innerHTML='<div class="hint" style="color:var(--danger)">导入出错：'+esc(String(e))+'（可稍后重试，已登记的源不会重复添加）</div>';
-  }finally{
-    if(btn){btn.disabled=false;btn.style.opacity="";btn.style.cursor="";}
-  }
-}
-function goDeploy(){switchPage("tvbox");setTimeout(()=>{const b=$("scInstallAll");if(b)b.click();},80);}
-function renderSubResult(d){
-  const cms=d.cms||{},g=d.guard||{},rt=d.runtime,skips=d.skipped_detail||[];
-  let h="";
-  // 运行时引导（加固源已登记但运行时未就绪 / 公开构建）
-  if(g && !g.skipped_build && g.items && g.items.length && rt && !rt.ready){
-    h+='<div style="margin:10px 0;padding:10px 12px;border:1px solid var(--warn,#d59a2b);border-radius:8px;background:rgba(213,154,43,.08)">'
-     + '<div style="font-weight:600;margin-bottom:4px">已导入 '+g.items.length+' 个加固秒播源，但本地安卓运行时未就绪</div>'
-     + '<div class="muted sm" style="margin-bottom:8px">'+esc(rt.reason||"运行时未连接")+'。源已保存，部署运行时后立即可播，无需重新导入。</div>'
-     + '<button class="primary small" onclick="goDeploy()">一键部署外挂运行时</button></div>';
-  }
-  if(g && g.skipped_build){
-    h+='<div class="hint" style="margin:10px 0">订阅中含加固源，但当前为公开构建（无安卓运行时），已仅导入苹果CMS源。</div>';
-  }
-  // 汇总
-  const cmsOk=cms.added||0, gOk=(g.items||[]).filter(x=>x.enabled).length;
-  const csp=d.csp||{}, dr=d.drpy||{};
-  const cspOk=(csp.items||[]).filter(x=>x.enabled).length;
-  const drOk=(dr.items||[]).filter(x=>x.enabled).length;
-  const totalOk=cmsOk+gOk+cspOk+drOk;
-  h+='<div style="margin:8px 0;font-weight:600">共扫描 '+(d.scanned||0)+' 个站点'
-    +(d.subscriptions?('（含 '+d.subscriptions+' 个子订阅）'):'')+'，新增可直接使用 <b style="color:var(--ok,#3a9)">'+totalOk+'</b> 个。</div>';
-  // 苹果CMS
-  if(cms.candidates||cms.added||cms.duplicate){
-    h+='<div class="subgrp"><div class="subgrp-t">🍿 苹果CMS影视站　新增 '+cmsOk+' · 已存在 '+(cms.duplicate||0)+'</div>';
-    (cms.added_names||[]).forEach(n=>{h+='<div class="subrow ok"><span>＋ '+esc(n)+'</span><span class="tag">已启用</span></div>';});
-    h+='</div>';
-  }
-  // 加固
-  if(g && g.items && g.items.length){
-    h+='<div class="subgrp"><div class="subgrp-t">🛡️ Guard 加固秒播源　自动启用 '+gOk+' · 风险默认关 '+(g.risk_names||[]).length+'</div>';
-    g.items.forEach(it=>{
-      const tag=it.enabled?'<span class="tag">已启用</span>'
-        : ('<span class="tag warn">'+(it.risk?esc(it.risk_reason||"风险源"):"默认关")+'</span>');
-      const cb='<label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">'
-        +'<input type="checkbox" '+(it.enabled?"checked":"")
-        +' onchange="subToggleGuard(\''+esc(it.key)+'\',this.checked)" style="width:14px;height:14px;accent-color:var(--accent)"/>启用</label>';
-      h+='<div class="subrow"><span>'+esc(it.name||it.key)+'</span><span style="display:flex;align-items:center;gap:8px">'+tag+cb+'</span></div>';
-    });
-    h+='</div>';
-  }
-  if(g && g.error){h+='<div class="hint" style="color:var(--danger)">加固源写入失败：'+esc(g.error)+'</div>';}
-  // 普通 csp_ 爬虫
-  if(csp && csp.skipped_build){
-    h+='<div class="hint" style="margin:10px 0">订阅中含普通爬虫源，但当前为公开构建（无安卓运行时），已跳过。</div>';
-  } else if(csp && (csp.items||[]).length){
-    const jar=csp.jar||{};
-    const jarBad=jar && jar.ok===false;
-    h+='<div class="subgrp"><div class="subgrp-t">🕷️ 普通爬虫源（csp_）　自动启用 '+cspOk+' / '+(csp.items||[]).length
-      +(jarBad?' <span class="tag warn">jar 未就绪</span>':'')+'</div>';
-    if(jarBad){
-      h+='<div style="margin:6px 0;padding:8px 10px;border:1px solid var(--warn,#d59a2b);border-radius:8px;background:rgba(213,154,43,.08)">'
-       + '<div class="muted sm">爬虫 jar 自动下载失败：'+esc(jar.error||"源站不可达")+'</div>'
-       + '<div class="muted sm" style="margin:3px 0 6px;word-break:break-all">'+esc(jar.url||"")+'</div>'
-       + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-       + '<button class="small" onclick="retryJar(this,\''+esc(jar.url||"")+'\')">重试下载</button>'
-       + '<label class="small" style="border:1px solid var(--line,#ccc);border-radius:6px;padding:4px 10px;cursor:pointer">手动补传 jar'
-       + '<input type="file" accept=".jar,.zip" style="display:none" onchange="uploadJar(this,\''+esc(jar.url||"")+'\')"></label></div></div>';
-    }
-    csp.items.forEach(it=>{
-      const state=it.enabled?'<span class="tag">已启用</span>'
-        : (it.risk?'<span class="tag warn">风险源·默认关</span>'
-           : (it.has_jar?'<span class="tag warn">默认关</span>':'<span class="tag warn">缺 jar</span>'));
-      const cb='<label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">'
-        +'<input type="checkbox" '+(it.enabled?"checked":"")
-        +' onchange="spToggle(this,\''+esc(it.key)+'\')" style="width:14px;height:14px;accent-color:var(--accent)"/>启用</label>';
-      h+='<div class="subrow"><span>'+esc(it.name||it.key)+'</span><span style="display:flex;align-items:center;gap:8px">'+state+cb+'</span></div>';
-    });
-    h+='</div>';
-  }
-  if(csp && csp.error){h+='<div class="hint" style="color:var(--danger)">普通爬虫写入失败：'+esc(csp.error)+'</div>';}
-  // 远程 DRPY
-  if(dr && dr.skipped_build){
-    h+='<div class="hint" style="margin:10px 0">订阅中含远程 JS 爬虫，但当前为公开构建（无 Node 运行时），已跳过。</div>';
-  } else if(dr && (dr.items||[]).length){
-    h+='<div class="subgrp"><div class="subgrp-t">🧩 远程 JS 爬虫（DRPY）　就绪并启用 '+drOk+' / '+dr.items.length+'</div>';
-    dr.items.forEach(it=>{
-      const state=it.enabled?'<span class="tag">已启用</span>'
-        :'<span class="tag warn">脚本未就绪</span>';
-      h+='<div class="subrow"><span>'+esc(it.name||it.key)+'</span>'+state+'</div>';
-    });
-    h+='<div class="muted sm" style="padding:4px 2px">脚本若 401/下载失败，可在下方「已导入的远程 JS 爬虫」处重试。</div></div>';
-  }
-  if(dr && dr.error){h+='<div class="hint" style="color:var(--danger)">远程JS导入失败：'+esc(dr.error)+'</div>';}
-  // 跳过
-  if(skips.length){
-    h+='<details class="subgrp" style="margin-top:8px"><summary class="subgrp-t" style="cursor:pointer">⏭️ 跳过 '+ (d.skipped||skips.length) +' 个（网盘/直播/无法识别/探测失败）</summary>';
-    const by={};skips.forEach(s=>{const r=s.reason||"其他";(by[r]=by[r]||[]).push(s.name);});
-    Object.keys(by).forEach(r=>{h+='<div class="subrow muted"><span>'+esc(by[r].slice(0,10).join("、"))+(by[r].length>10?" 等":"")+'</span><span class="tag">'+esc(r)+'</span></div>';});
-    h+='</details>';
-  }
-  $("subResult").innerHTML=h;
 }
 // ---------- 已导入普通爬虫源管理 ----------
 async function delSource(id,name){

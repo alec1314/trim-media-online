@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""海量分类片库（方案 C）：直接按资源站苹果 CMS 分类深翻。
+"""单源独立媒体库：按某个资源的苹果 CMS 分类深翻。
 
-与豆瓣“热榜”（charts.py，精选 ~160 部、点击才搜源）不同，这里面向“无限浏览”：
-- 启动/定时拉取各资源站的分类表 ac=list，把所有子分类按名称归并为
-  movie / tv / anime / variety 四个标准大类；
-- 每个大类选一个“规范源”（可深翻、页数多、稳定），浏览时按页直连
-  ac=detail&t=<子类id>&pg=N，每页 20 条且自带播放地址，点开即可播，无需再搜索；
-- 页级短 TTL 内存缓存 + 单 flight；规范源某页失败自动回退到备选源；
+只服务“独立库”模式（管理页给某个源勾选「独立库」）：
+- 定时拉取该源分类表 ac=list，把叶子子类归并为 movie / tv / anime / variety；
+- 浏览时按页直连 ac=detail&t=<子类id>&pg=N，每页自带播放地址，点开即可播；
+- 页级短 TTL 内存缓存 + 单 flight；多叶子并发抓取合并去重，容忍慢源抖动；
 - 条目 guid 绑定 (源, vod_id)，brief 入库后复用既有详情/选集/播放/续播链。
 """
 from __future__ import annotations
@@ -38,8 +36,6 @@ CATALOG_CATEGORIES = [
     ("variety", "🎤海量综艺", "Mix"),
 ]
 
-# 跨源聚合的“海量四库”使用的保留作用域 id；单源独立库作用域为其 source id。
-AGG_SCOPE = "__agg__"
 CATS = [c for c, _, _ in CATALOG_CATEGORIES]
 
 # 名称关键字（匹配 type_name 子串）。顺序：动漫/综艺优先于“电影/剧”判定。
@@ -173,18 +169,13 @@ class Catalog:
         self._lock = threading.RLock()
         # source_id -> [ {type_id, type_name, type_pid, cat} ]
         self._classes: dict[str, list[dict]] = {}
-        # "scope:cat" -> [ {source_id, type_id, type_name, pagecount?} ]（首选在最前）
-        # scope 为 AGG_SCOPE（跨源聚合）或某个 source_id（单源独立媒体库）。
+        # "source_id:cat" -> [ {source_id, type_id, type_name, pagecount?} ]
         self._routes: dict[str, list[dict]] = {}
         self._updated = 0.0
         self._refreshing = False
         # key = (scope, cat, page)
         self._page_cache: dict[tuple, tuple[float, list[dict]]] = {}
         self._inflight: dict[tuple, asyncio.Future] = {}
-        # "scope:cat" -> 去重缓冲（资源站分页会重复个别 vod）
-        self._seen_guids: dict[str, set[str]] = {}
-        self._dense: dict[str, list[dict]] = {}
-        self._scanned_page: dict[str, int] = {}
         self._dense_count: dict[str, int] = {}
         # (sid, cat) -> [备用叶子 route...]（首选分类探测失败时 rescue 得到）
         self._fallbacks: dict[tuple[str, str], list[dict]] = {}
@@ -280,51 +271,40 @@ class Catalog:
 
             def routes_for_scope(scope: str) -> dict[str, list[dict]]:
                 out: dict[str, list[dict]] = {}
-                # 扩展分类只可能出现在单源作用域（该源显式授权），永不进聚合
-                cats = CATS if (scope == AGG_SCOPE or not _adult_on()) else CATS + [ADULT_CAT]
+                cats = CATS + [ADULT_CAT] if _adult_on() else CATS
                 for cat in cats:
-                    if scope == AGG_SCOPE:
-                        rs = [probed[(cat, sid)] for (c2, sid) in probed if c2 == cat]
-                        rs.sort(key=lambda r: -(r.get("pagecount") or 0))
-                        # 聚合：首选最深的源，并附带其余可深翻源做回退
-                        out[cat] = rs
-                    else:
-                        # 单源独立库：不依赖建库探测是否成功——直接纳入该类下
-                        # 全部叶子（探测到页数的排前面，未探测到的用 MAX_PAGES
-                        # 兜底），取页时并发抓取合并、天然容错慢/超时叶子。
-                        by_id = {}
-                        seed = []
-                        hit = probed.get((cat, scope))
-                        if hit:
-                            seed.append(hit)
-                        seed.extend(self._fallbacks.get((scope, cat), []))
-                        for r in seed:
-                            by_id[r["type_id"]] = r
-                        for cl in self._classes.get(scope, []):
-                            if cl.get("cat") == cat and cl["type_id"] not in by_id:
-                                by_id[cl["type_id"]] = {
-                                    "source_id": scope,
-                                    "type_id": cl["type_id"],
-                                    "type_name": cl["type_name"],
-                                    "pagecount": MAX_PAGES}
-                        rs = list(by_id.values())
-                        rs.sort(key=lambda r: -(r.get("pagecount") or 0))
-                        out[cat] = rs
+                    # 单源独立库：不依赖建库探测是否成功——直接纳入该类下全部
+                    # 叶子（探测到页数的排前面，未探测到的用 MAX_PAGES 兜底），
+                    # 取页时并发抓取合并、天然容错慢/超时叶子。
+                    by_id = {}
+                    seed = []
+                    hit = probed.get((cat, scope))
+                    if hit:
+                        seed.append(hit)
+                    seed.extend(self._fallbacks.get((scope, cat), []))
+                    for r in seed:
+                        by_id[r["type_id"]] = r
+                    for cl in self._classes.get(scope, []):
+                        if cl.get("cat") == cat and cl["type_id"] not in by_id:
+                            by_id[cl["type_id"]] = {
+                                "source_id": scope,
+                                "type_id": cl["type_id"],
+                                "type_name": cl["type_name"],
+                                "pagecount": MAX_PAGES}
+                    rs = list(by_id.values())
+                    rs.sort(key=lambda r: -(r.get("pagecount") or 0))
+                    out[cat] = rs
                 return out
 
             new_routes: dict[str, list[dict]] = {}
-            agg = routes_for_scope(AGG_SCOPE)
-            for cat, rs in agg.items():
-                new_routes[self._scope_key(AGG_SCOPE, cat)] = rs
             for sid in self.standalone_scopes():
                 for cat, rs in routes_for_scope(sid).items():
                     if rs:
                         new_routes[self._scope_key(sid, cat)] = rs
             with self._lock:
-                # 清理已不再需要的作用域缓冲
                 valid_keys = set(new_routes.keys())
                 self._routes = new_routes
-                for d in (self._seen_guids, self._dense, self._scanned_page):
+                for d in (self._dense_count,):
                     for k in list(d.keys()):
                         if k not in valid_keys:
                             d.pop(k, None)
@@ -379,32 +359,24 @@ class Catalog:
         with self._lock:
             return {
                 "updated_at": int(self._updated),
-                "categories": {
-                    cat: {
-                        "routes": len(self._routes.get(
-                            self._scope_key(AGG_SCOPE, cat), [])),
-                        "source": (self._routes.get(
-                            self._scope_key(AGG_SCOPE, cat)) or [{}])[0].get("source_id", ""),
-                        "type_name": (self._routes.get(
-                            self._scope_key(AGG_SCOPE, cat)) or [{}])[0].get("type_name", ""),
-                        "pagecount": min(int((self._routes.get(
-                            self._scope_key(AGG_SCOPE, cat)) or [{}])[0]
-                            .get("pagecount") or 0), MAX_PAGES),
-                    } for cat, _, _ in CATALOG_CATEGORIES},
+                "standalone": {
+                    sid: {cat: len(self._routes.get(self._scope_key(sid, cat), []))
+                          for cat, _, _ in CATALOG_CATEGORIES}
+                    for sid in self.standalone_scopes()},
             }
 
-    def available(self, cat: str, scope: str = AGG_SCOPE) -> bool:
+    def available(self, cat: str, scope: str = "") -> bool:
         with self._lock:
             return bool(self._routes.get(self._scope_key(scope, cat)))
 
-    def pagecount(self, cat: str, scope: str = AGG_SCOPE) -> int:
+    def pagecount(self, cat: str, scope: str = "") -> int:
         with self._lock:
             routes = self._routes.get(self._scope_key(scope, cat)) or []
             if not routes:
                 return 0
             return min(int(routes[0].get("pagecount") or 0), MAX_PAGES)
 
-    def total(self, cat: str, scope: str = AGG_SCOPE) -> int:
+    def total(self, cat: str, scope: str = "") -> int:
         # 用规范源页数估算 total；最后一页条数未知，前端以空页自然停止。
         return self.pagecount(cat, scope) * PAGE_SIZE
 
@@ -412,49 +384,7 @@ class Catalog:
         return (not self._updated) or (time.time() - self._updated) >= CLASS_REFRESH
 
     # -------------------------------------------------- 页级抓取
-    async def _extend_dense(self, scope: str, cat: str, need_count: int) -> int:
-        """顺序翻页直到去重后的累计条目数达到 need_count（或翻到该源末页）。"""
-        sk = self._scope_key(scope, cat)
-        pc = self.pagecount(cat, scope)
-        seen = self._seen_guids.setdefault(sk, set())
-        dense = self._dense.setdefault(sk, [])
-        pg = self._scanned_page.get(sk, 0) + 1
-        empty_streak = 0
-        while len(dense) < need_count and pg <= pc:
-            rows = await self.get_page(cat, pg, scope)
-            added = 0
-            for b in rows:
-                gid = b.get("guid")
-                if gid in seen:
-                    continue
-                seen.add(gid); dense.append(b); added += 1
-            if added:
-                # 只有真正取到新增才把游标前移，慢源抖动的空页下次可重试
-                self._scanned_page[sk] = pg
-                pg += 1
-                empty_streak = 0
-            else:
-                # 连续多页空（超时/末页）才停止，容忍慢源的偶发抖动
-                empty_streak += 1
-                if empty_streak >= 3:
-                    self._scanned_page[sk] = pg
-                    break
-                pg += 1
-        self._dense_count[sk] = len(dense)
-        return len(dense)
-
-    async def get_window(self, cat: str, offset: int, limit: int,
-                         scope: str = AGG_SCOPE) -> list[dict]:
-        """按“去重后的全局偏移”取一窗 brief，自动顺序跨 CMS 页，密集无重复。"""
-        offset = max(0, int(offset))
-        limit = max(1, min(int(limit), 100))
-        sk = self._scope_key(scope, cat)
-        dense = self._dense.setdefault(sk, [])
-        if len(dense) < offset + limit:
-            await self._extend_dense(scope, cat, offset + limit)
-        return dense[offset:offset + limit]
-
-    async def get_page(self, cat: str, page: int, scope: str = AGG_SCOPE) -> list[dict]:
+    async def get_page(self, cat: str, page: int, scope: str = "") -> list[dict]:
         """取某作用域某大类第 page 页（1 起）的可播放 brief 列表（已入库）。"""
         page = max(1, int(page))
         if page > MAX_PAGES:
@@ -493,18 +423,14 @@ class Catalog:
         return await fut
 
     def cached_page_posters(self, cat: str, n: int = 8,
-                            scope: str = AGG_SCOPE) -> list[str]:
+                            scope: str = "") -> list[str]:
         """纯本地、零网络：从已缓存的首页/密集列表取海报，供媒体库卡片秒回。"""
         out: list[str] = []
         with self._lock:
-            # 优先已翻好的去重密集列表（最新），其次首页缓存
-            dense = self._dense.get(self._scope_key(scope, cat)) or []
-            pool = list(dense)
+            pool: list[dict] = []
             hit = self._page_cache.get((scope, cat, 1))
             if hit and time.time() - hit[0] < hit[2]:
-                for b in hit[1]:
-                    if b not in pool:
-                        pool.append(b)
+                pool = list(hit[1])
             seen = set()
             for b in pool:
                 p = b.get("poster") or ""
@@ -535,7 +461,7 @@ class Catalog:
                 continue
             # 私有源放宽：单源作用域且该源开启 loose_filter 时，
             # 跳过标题/备注噪音过滤；硬红线与常规分类红线仍在。
-            loose = (scope != AGG_SCOPE and bool(source.get("loose_filter")))
+            loose = bool(source.get("loose_filter"))
             if not loose and _cfg.is_junk(t.title, t.remarks):
                 continue
             briefs.append({
@@ -556,8 +482,6 @@ class Catalog:
         from store import store
         with self._lock:
             routes = list(self._routes.get(self._scope_key(scope, cat)) or [])
-        if scope == AGG_SCOPE:
-            routes = routes[:4]
         if not routes:
             return []
 
@@ -574,53 +498,40 @@ class Catalog:
                 return None
             return source, route, vods
 
-        # 单源独立库：把该类下全部叶子的同一页并发抓取后“合并去重”，
-        # 而不是竞速只取一个——慢/不稳的私有源单页常超时，合并所有叶子
-        # 才能保证条目完整。首轮给较长超时，全空再重试两轮。
-        if scope != AGG_SCOPE and len(routes) > 1:
-            sem = asyncio.Semaphore(10)
+        # 把该类下全部叶子的同一页并发抓取后“合并去重”，而不是竞速只取一个
+        # ——慢/不稳的私有源单页常超时，合并所有叶子才能保证条目完整。
+        # 首轮给较长超时，全空再重试两轮。
+        sem = asyncio.Semaphore(10)
 
-            async def once(timeout):
-                async with httpx.AsyncClient(follow_redirects=True,
-                                             trust_env=False,
-                                             verify=False) as client:
-                    async def bound(r):
-                        async with sem:
-                            return await fetch_one(client, r, timeout)
-                    results = await asyncio.gather(
-                        *[bound(r) for r in routes],
-                        return_exceptions=True)
-                merged: list[dict] = []
-                seen_g: set[str] = set()
-                for res in results:
-                    if not isinstance(res, tuple):
-                        continue
-                    source, route, vods = res
-                    for b in self._briefs_from_vods(vods, source, route, scope, cat):
-                        g = b.get("guid")
-                        if g and g not in seen_g:
-                            seen_g.add(g)
-                            merged.append(b)
-                return merged
-
-            for attempt, tmo in enumerate((16.0, 10.0, 8.0)):
-                briefs = await once(tmo)
-                if briefs:
-                    return store.remember_merged(briefs)
-            return []
-
-        # 跨源聚合：串行回退（不同源结果应一致，并发会无谓翻倍请求）
-        async with httpx.AsyncClient(follow_redirects=True, trust_env=False,
-                                     verify=False) as client:
-            for route in routes:
-                got = await fetch_one(client, route, HTTP_TIMEOUT)
-                if not got:
+        async def once(timeout):
+            async with httpx.AsyncClient(follow_redirects=True,
+                                         trust_env=False,
+                                         verify=False) as client:
+                async def bound(r):
+                    async with sem:
+                        return await fetch_one(client, r, timeout)
+                results = await asyncio.gather(
+                    *[bound(r) for r in routes],
+                    return_exceptions=True)
+            merged: list[dict] = []
+            seen_g: set[str] = set()
+            for res in results:
+                if not isinstance(res, tuple):
                     continue
-                source, _route, vods = got
-                briefs = self._briefs_from_vods(vods, source, route, scope, cat)
-                if briefs:
-                    return store.remember_merged(briefs)
+                source, route, vods = res
+                for b in self._briefs_from_vods(vods, source, route, scope, cat):
+                    g = b.get("guid")
+                    if g and g not in seen_g:
+                        seen_g.add(g)
+                        merged.append(b)
+            return merged
+
+        for attempt, tmo in enumerate((16.0, 10.0, 8.0)):
+            briefs = await once(tmo)
+            if briefs:
+                return store.remember_merged(briefs)
         return []
+
 
     async def warm_standalone(self, scope: str):
         """建库后后台预热独立库各分类首页，缓解慢源首屏空白。"""

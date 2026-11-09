@@ -8,6 +8,7 @@ provider 只负责"搜索→条目→播放 URL 列表"，不做转码。
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 import urllib.parse
@@ -16,6 +17,7 @@ from dataclasses import dataclass, field
 import httpx
 
 import features
+import sourcehealth
 
 # trim-media-online 不内置任何资源站线路：所有苹果 CMS V10 采集接口
 # 均由用户在管理页自行添加与启用（见 README「源的要求」一节）。
@@ -24,13 +26,13 @@ DEFAULT_SOURCES: list[dict] = []
 
 
 HTTP_TIMEOUT = 12.0
-# 加固（真机）搜索单源硬超时：聚合搜索要 gather 全部源，真机卡顿不能拖垮整体。
-# 取较短值让慢加固源快速失败，纯 CMS 源通常 5s 内返回，不影响热榜片起播。
-GUARD_SEARCH_TIMEOUT = 8.0
-# 普通 csp spider jar / drpy 真机源同样走 redroid，to_thread 本身无超时；
-# 几十源抢 3 台设备时单源可能长时间不返回，必须给硬超时，否则 gather 永久挂住。
-SPIDER_SEARCH_TIMEOUT = 8.0
-DRPY_SEARCH_TIMEOUT = 8.0
+# 聚合搜索单源预算：普通 8s、快速回源 6s；并发上限与失败负缓存进一步缩短尾延迟。
+SEARCH_TIMEOUT = 8.0
+SEARCH_TIMEOUT_FAST = 6.0
+SEARCH_CONCURRENCY = 16
+# 单源请求失败后的负缓存窗口：期间搜索直接跳过，避免反复等同一个死源。
+SEARCH_FAIL_TTL = 5 * 60
+_search_neg: dict[str, float] = {}
 _DIRECT_RE = re.compile(r"^https?://", re.I)
 _MEDIA_RE = re.compile(r"\.(m3u8|mp4|flv|mkv|ts)(\?|$)", re.I)
 # 可由自有账号转存原画播放的网盘分享链接（夸克 / UC）。
@@ -146,20 +148,23 @@ def _site_root(api: str) -> str:
     return f"{p.scheme}://{p.netloc}/"
 
 
-async def search_source(client: httpx.AsyncClient, source: dict,
-                        keyword: str) -> list[OnlineTitle]:
+async def _search_source_full(client: httpx.AsyncClient, source: dict,
+                              keyword: str,
+                              timeout: float = SEARCH_TIMEOUT
+                              ) -> tuple[list[OnlineTitle], bool]:
+    """搜索单源，返回 (结果, 接口是否正常)。接口正常但无结果为 ([] , True)。"""
     params = {"ac": "detail", "wd": keyword}
     try:
         r = await client.get(source["api"], params=params,
                              headers={"User-Agent": "Mozilla/5.0"},
-                             timeout=HTTP_TIMEOUT)
+                             timeout=timeout)
         if r.status_code != 200:
-            return []
+            return [], False
         j = r.json()
     except Exception:
-        return []
+        return [], False
     if not isinstance(j, dict) or j.get("code") not in (1, "1"):
-        return []
+        return [], False
     out = []
     for v in j.get("list", []) or []:
         try:
@@ -168,6 +173,13 @@ async def search_source(client: httpx.AsyncClient, source: dict,
             continue
         if t and t.title:
             out.append(t)
+    return out, True
+
+
+async def search_source(client: httpx.AsyncClient, source: dict,
+                        keyword: str,
+                        timeout: float = SEARCH_TIMEOUT) -> list[OnlineTitle]:
+    out, _ok = await _search_source_full(client, source, keyword, timeout)
     return out
 
 
@@ -332,14 +344,41 @@ async def probe_source(api: str, keyword: str = "庆余年",
 
 
 
-async def search_all(keyword: str, sources=None) -> list[OnlineTitle]:
+async def search_all(keyword: str, sources=None, fast: bool = False
+                      ) -> list[OnlineTitle]:
+    """并发聚合搜索。跳过死亡冷却/负缓存中的源，限制并发并记录源级健康。"""
     sources = sources or DEFAULT_SOURCES
-    enabled = [s for s in sources if s.get("enabled")]
+    now = time.time()
+    targets: list[tuple[dict, str]] = []
+    for s in sources:
+        if not s.get("enabled"):
+            continue
+        key = "src:" + str(s.get("id") or s.get("api") or "")
+        if sourcehealth.is_dead(key):
+            continue
+        if _search_neg.get(key, 0) > now:
+            continue
+        targets.append((s, key))
+    if not targets:
+        return []
+    timeout = SEARCH_TIMEOUT_FAST if fast else SEARCH_TIMEOUT
+    sem = asyncio.Semaphore(SEARCH_CONCURRENCY)
+
+    async def one(client: httpx.AsyncClient, s: dict, key: str):
+        async with sem:
+            t0 = time.monotonic()
+            titles, ok = await _search_source_full(client, s, keyword, timeout)
+            lat = time.monotonic() - t0
+            sourcehealth.record(key, ok, lat)
+            if ok:
+                _search_neg.pop(key, None)
+            else:
+                _search_neg[key] = time.time() + SEARCH_FAIL_TTL
+            return titles
+
     async with httpx.AsyncClient(follow_redirects=True, trust_env=False) as client:
-        tasks = []
-        for s in enabled:
-            tasks.append(search_source(client, s, keyword))
-        results = await __import__("asyncio").gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(
+            *[one(client, s, k) for s, k in targets], return_exceptions=True)
     titles: list[OnlineTitle] = []
     for r in results:
         if isinstance(r, list):
