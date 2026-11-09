@@ -17,6 +17,23 @@
 
 - 新增 `proxy/danmu.py` 与配置键 `danmu_enabled` / `danmu_api` / `danmu_token` /
   `danmu_auto` / `danmu_offset` / `danmu_limit`；默认关闭，旧配置自动兼容。
+- danmu_api 接口地址支持任意 HTTP(S) 部署：本地 Docker、Vercel、Netlify、
+  **Cloudflare Workers** 均可。漏写协议时公网域名自动用 `https://`（避免 CF 的
+  HTTP→HTTPS 301 把 POST 降级成 GET）、内网地址自动用 `http://`；可直接粘贴
+  带 Token 的完整地址或 `/api/v2` 结尾的地址，程序自动归一化，不会重复拼接 Token。
+- 「测试连接」对 429（danmu_api 默认限流 3 次/分钟）与 403（Token 错误 /
+  Cloudflare 拦截）给出明确提示。
+
+### 修复
+
+- **弹幕走了真实接口却渲染不出来**：danmu_api 返回的 `p` 是 4 段
+  `时间,类型,颜色,来源标签`，此前按 5 段标准格式解析，第 4 段 `[qq]` 转数字失败
+  导致整条弹幕被丢弃（表现为「有弹幕但不显示」）。现按「第 4 段优先、失败回退
+  第 3 段」取颜色，兼容 3/4/5 段三种格式。
+- **Cloudflare 后的弹幕接口连接被重置**：httpx/OpenSSL 的 TLS 指纹会被 CF Bot
+  风控直接 RST，改用 `curl_cffi`（`impersonate=chrome`，缺失时回退 httpx）。
+- 弹幕接口偶发 404/5xx（上游取弹幕失败返回 `{"count":0}`）不再抛错，重试 3 次后
+  按空字幕处理；网络错误不再写入 10 分钟负缓存，下次播放立即重试。
 
 ## 1.3.0（2026-11-09）
 

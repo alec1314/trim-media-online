@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import re
 import time
@@ -93,15 +94,46 @@ def _save() -> None:
 _load()
 
 
-def api_base(api: str | None = None, token: str | None = None) -> str:
-    cfg = config.get()
-    raw = str(cfg.get("danmu_api") if api is None else api).strip().rstrip("/")
+def _is_private_host(hostport: str) -> bool:
+    """判断是否内网/本机地址；用于在用户漏写协议时选择 http 还是 https。"""
+    host = hostport.rsplit("@", 1)[-1].strip()
+    if host.startswith("["):  # IPv6 字面量
+        return True
+    host = host.split(":", 1)[0].strip().lower()
+    if not host:
+        return True
+    if host == "localhost" or host.endswith((".local", ".lan", ".home", ".internal")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        # 无点号的主机名（NAS、容器服务名）按内网处理
+        return "." not in host
+
+
+def _normalize(raw: str) -> str:
+    raw = str(raw or "").strip().rstrip("/")
     if not raw:
         return ""
+    # 允许直接粘贴到 /api/v2，把它当作根地址
+    if raw.lower().endswith("/api/v2"):
+        raw = raw[:-7].rstrip("/")
     if not re.match(r"^https?://", raw, re.I):
-        raw = "http://" + raw
+        # Workers/Vercel 等公网域名默认 https；内网地址仍用 http
+        raw = ("http://" if _is_private_host(raw.split("/", 1)[0])
+               else "https://") + raw
+    return raw
+
+
+def api_base(api: str | None = None, token: str | None = None) -> str:
+    cfg = config.get()
+    raw = _normalize(cfg.get("danmu_api") if api is None else api)
+    if not raw:
+        return ""
     tok = str(cfg.get("danmu_token") if token is None else token).strip().strip("/")
     # danmu_api 默认 token 87654321 可直接省略；自定义 token 走 /{TOKEN}/api/v2/...
+    # 若地址里已经带了 token（如 https://xxx.workers.dev/myToken），不重复拼接。
     if tok and tok != "87654321" and raw.rsplit("/", 1)[-1] != tok:
         raw = f"{raw}/{tok}"
     return raw
@@ -112,7 +144,57 @@ def enabled() -> bool:
     return bool(cfg.get("danmu_enabled")) and bool(api_base())
 
 
-def _client(timeout: float = 12.0) -> httpx.AsyncClient:
+def _cffi():
+    try:
+        from curl_cffi import requests as _cr
+        return _cr
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class _CffiAsyncClient:
+    """curl_cffi 异步客户端：公网弹幕接口多架在 Cloudflare 后，OpenSSL TLS 指纹
+    会被直接 RST（httpx 报 ConnectError），用浏览器指纹才能通过。"""
+
+    def __init__(self, timeout: float = 12.0):
+        from curl_cffi.requests import AsyncSession
+        self._s = AsyncSession(impersonate="chrome", verify=False)
+        self._t = timeout
+
+    async def _run(self, method: str, url: str, **kw) -> object:
+        last = None
+        for attempt in range(2):
+            try:
+                return await self._s.request(method, url, timeout=self._t,
+                                             allow_redirects=True, **kw)
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                if attempt == 0:
+                    await asyncio.sleep(0.4)
+        raise last
+
+    async def get(self, url, params=None, **kw):
+        return await self._run("GET", url, params=params, **kw)
+
+    async def post(self, url, json=None, **kw):
+        return await self._run("POST", url, json=json, **kw)
+
+    async def close(self) -> None:
+        try:
+            await self._s.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.close()
+
+
+def _client(timeout: float = 12.0):
+    if _cffi() is not None:
+        return _CffiAsyncClient(timeout)
     return httpx.AsyncClient(
         timeout=httpx.Timeout(timeout, connect=5.0),
         trust_env=False,
@@ -218,11 +300,20 @@ def _parse_comment(item: dict) -> tuple[float, int, int, str] | None:
     try:
         t = float(parts[0])
         mode = int(parts[1]) if len(parts) > 1 else 1
-        # p = 时间,类型,字号,颜色,...（颜色是第 4 段，不是第 3 段）
-        colour = (int(parts[3]) if len(parts) > 3
-                  else (int(parts[2]) if len(parts) > 2 else 0xFFFFFF))
     except (TypeError, ValueError):
         return None
+    # p 有两种形态：5 段（时间,类型,字号,颜色,时间戳）与
+    # danmu_api 的 4 段（时间,类型,颜色,来源标签）。颜色取第一个能转成
+    # 整数的段（第 4 段优先），否则用白色。
+    colour = 0xFFFFFF
+    for idx in (3, 2):
+        if len(parts) <= idx:
+            continue
+        try:
+            colour = int(str(parts[idx]).strip())
+            break
+        except (TypeError, ValueError):
+            continue
     text = _clean_text(item.get("m") or "")
     if not text or len(text) > 120:
         return None
@@ -368,8 +459,16 @@ async def _search_episodes(base: str, title: str, episode: int, timeout: float =
 
 async def _comments(base: str, episode_id: int, timeout: float = 15.0) -> list:
     async with _client(timeout) as cli:
-        r = await cli.get(f"{base}/api/v2/comment/{episode_id}",
-                          params={"format": "json", "duration": "true"})
+        # danmu_api 上游取弹幕偶发失败会返回 404/5xx {"count":0}，多试几次再按空处理
+        for attempt in range(3):
+            r = await cli.get(f"{base}/api/v2/comment/{episode_id}",
+                              params={"format": "json", "duration": "true"})
+            if r.status_code != 404 and r.status_code < 500:
+                break
+            if attempt < 2:
+                await asyncio.sleep(1.2)
+        if r.status_code == 404:
+            return []
         r.raise_for_status()
         data = r.json()
     if isinstance(data, dict) and isinstance(data.get("data"), dict) \
@@ -421,6 +520,9 @@ async def _match_cached(base: str, title: str, season: int, episode: int,
             eid = await _search_episodes(base, title, episode)
         except Exception:
             eid = None
+    if last_exc is not None:
+        # 网络/接口抖动导致的失败不写负缓存，下次播放直接重试
+        return None
     _MATCH[key] = (now, eid)
     if len(_MATCH) > _MAX_CACHE:
         for k in list(_MATCH)[: _MAX_CACHE // 2]:
@@ -525,9 +627,14 @@ async def test(api: str, token: str) -> dict:
         async with _client(8.0) as cli:
             r = await cli.get(f"{base}/api/v2/search/anime", params={"keyword": "测试"})
         ms = int((time.time() - started) * 1000)
+        if r.status_code == 429:
+            return {"ok": False, "ms": ms,
+                    "msg": "HTTP 429：请求过于频繁（danmu_api 默认限流 3 次/分钟，"
+                           "可在环境变量把 RATE_LIMIT_MAX_REQUESTS 调大或设为 0）"}
         if r.status_code in (401, 403):
             return {"ok": False, "ms": ms,
-                    "msg": f"HTTP {r.status_code}：Token 可能不正确"}
+                    "msg": f"HTTP {r.status_code}：Token 可能不正确，"
+                           "或 Cloudflare 拦截了请求"}
         if r.status_code >= 400:
             return {"ok": False, "ms": ms, "msg": f"HTTP {r.status_code}"}
         data = r.json()

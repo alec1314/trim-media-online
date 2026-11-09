@@ -397,7 +397,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
         <label class="switch-row"><input type="checkbox" id="danmuAuto"/>
           <span>自动加载弹幕<span class="sub">进入播放页默认选中「弹幕」字幕；关闭后可在字幕菜单手动选择</span></span></label>
         <label class="field"><span>接口地址</span>
-          <input type="text" id="danmuApi" placeholder="http://192.168.1.10:9321"/></label>
+          <input type="text" id="danmuApi" placeholder="https://danmu.xxx.workers.dev 或 http://192.168.1.10:9321"/></label>
         <label class="field" style="max-width:360px"><span>接口 Token<span class="muted" style="font-weight:400">（默认 87654321 可留空）</span></span>
           <input type="text" id="danmuToken" placeholder="87654321"/></label>
         <div class="row">
@@ -417,7 +417,10 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
         <div class="card-title">使用说明</div>
         <div class="stack sm muted" style="line-height:1.7">
           <div>· 先自行部署 danmu_api，例如：<code>docker run -d -p 9321:9321 -e TOKEN=87654321 --name danmu-api logvar/danmu-api:latest</code></div>
-          <div>· 地址填 <code>http://NAS地址:9321</code>；使用默认 Token 时留空即可，自定义 Token 后需填写。</div>
+          <div>· 也可用 Cloudflare Workers / Vercel 等云端部署：地址填 <code>https://xxx.workers.dev</code>，自定义 Token 会按 <code>/Token/api/v2/...</code> 自动拼接，不用手写路径。</div>
+          <div>· 本地或内网填 <code>http://NAS地址:9321</code>；漏写 <code>https://</code> 时公网域名会自动按 https 访问。</div>
+          <div>· CF 免费版单次请求有子请求上限，长视频可能只拿到前半段弹幕；官方也说明 CF 对 B 站有风控，追求稳定建议本地 Docker 或 Vercel/Netlify。</div>
+          <div>· danmu_api 默认限流 3 次/分钟，匹配失败频繁时可在其环境变量调大 <code>RATE_LIMIT_MAX_REQUESTS</code>。</div>
           <div>· 播放时字幕菜单会出现「弹幕」；无匹配或接口超时只会显示空字幕，不影响正片播放。</div>
           <div>· 按片名 + SxxEyy 自动匹配，冷门片或命名不规范的片源可能匹配不到；可用时间偏移校准。</div>
           <div>· 弹幕依赖播放器的 ASS 外挂字幕能力（Web 端内置 libass）；TV 端与手机端以实际表现为准。</div>

@@ -105,10 +105,23 @@ systemd 单元中设置环境变量 `TMO_TV_COMPAT=0` 关闭该能力（TV 端�
 交给原生播放器渲染——不修改播放器、不另起播放页：
 
 1. 自行部署 [danmu_api](https://github.com/huangxd-/danmu_api)（弹弹play 兼容接口），
-   例如：`docker run -d -p 9321:9321 -e TOKEN=87654321 --name danmu-api logvar/danmu-api:latest`；
-2. 打开管理台「弹幕」页，填写接口地址（如 `http://NAS地址:9321`），启用并保存；
+   本地 Docker 示例：`docker run -d -p 9321:9321 -e TOKEN=87654321 --name danmu-api logvar/danmu-api:latest`；
+2. 打开管理台「弹幕」页，填写接口地址，启用并保存：
+   - 本地 Docker：`http://NAS地址:9321`
+   - **Cloudflare Workers**：`https://<你的worker>.workers.dev`
+   - **Vercel / Netlify**：填部署后的完整域名
+   - 自定义 Token 无需手写路径，程序会自动拼成 `/{TOKEN}/api/v2/...`；
+     漏写协议时，公网域名自动用 `https://`，内网地址自动用 `http://`。
 3. 播放在线影片时，字幕菜单会出现「弹幕」（默认自动选中）；按片名 + `SxxEyy`
    自动匹配，冷门片或命名不规范的片源可能匹配不到，可在管理台调整时间偏移。
+
+> **Cloudflare Workers 部署注意**：danmu_api 的 CF 版本接口路径与 Docker 完全一致，
+> 支持 `/api/v2/match`（POST）、`/api/v2/comment/{id}`、`/api/v2/search/episodes`。
+> 但官方也提示 CF 部署偏不稳定：B 站源可能被风控、单次请求子请求数有上限
+> （长视频后半段弹幕可能缺失）。另外 Workers 域名在部分网络下不可达，建议绑定自定义域名；
+> 追求稳定体验优先本地 Docker 或 Vercel/Netlify。
+> danmu_api 默认限流 `RATE_LIMIT_MAX_REQUESTS=3`（每分钟同 IP），匹配失败较多时
+> 可在 Worker 环境变量中调大或设为 `0` 关闭。
 
 说明与边界：
 
@@ -190,7 +203,7 @@ bash packaging/fpk/build.sh
 ## 已知限制
 
 - TV 端兼容依赖 nftables 把入站 8005 重定向到本机网关；若使用旁路由/端口转发，请确保 8005 未被其他规则提前 DNAT。
-- 飞牛原生播放器没有弹幕层，暂不提供在线弹幕；可行方案见下方「关于弹幕」。
+- 弹幕依赖播放器自带的 ASS 外挂字幕渲染（Web 端 JASSUB/libass），无独立弹幕层；TV/手机端以实际表现为准，详见上方「弹幕」。
 - 点播源随时间失效，本扩展不做转存/STRM 落库——即刷即播、即搜即播；失效源在管理页删除或替换。
 - 多线路聚合按「片名规范化 + 年份」判定，极少数同名不同作品可能被并为一体。
 - 官方 trim.media 升级若改动接口结构需相应适配；停用即恢复官方服务。
