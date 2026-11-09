@@ -32,6 +32,7 @@ from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
 
 import features
 import providers
+import lunatv
 import sourcehealth
 import client as clientmod
 import live as livemod
@@ -4206,6 +4207,87 @@ def _schedule_routes_refresh():
             asyncio.create_task(catalog.refresh_routes(config.enabled_sources()))
     except Exception:
         pass
+
+
+@app.get("/v/api/ext/lunatv/status")
+async def ext_lunatv_status():
+    return {"code": 0, "data": {
+        "presets": [{"key": k, "label": v[1], "note": v[2]}
+                    for k, v in lunatv.PRESETS.items()],
+        "last": config.get().get("lunatv_last_sync") or {},
+        "proxy": bool(__import__("subfetch").subscription_proxy()),
+    }}
+
+
+@app.post("/v/api/ext/lunatv/import")
+async def ext_lunatv_import(request: Request):
+    """从 LunaTV-config（或自定义 LunaTV/MoonTV 配置地址）拉取源并导入。
+
+    入参：{preset?: "jin18"|"jingjian"|"full", url?: 自定义地址,
+           probe?: 是否导入前测活（默认 True）, standalone?: 是否作独立媒体库}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    preset = str(body.get("preset") or "jin18").strip()
+    url = str(body.get("url") or "").strip()
+    probe = body.get("probe", True) is not False
+    standalone = bool(body.get("standalone"))
+
+    try:
+        raw_cfg, used_url = await lunatv.fetch_config(preset=preset, url=url)
+        sites = lunatv.parse_sites(raw_cfg)
+    except lunatv.LunaError as exc:
+        return JSONResponse({"code": 400, "msg": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"code": 502,
+                             "msg": f"拉取失败：{type(exc).__name__}"},
+                            status_code=502)
+
+    existing = {s.get("api", "").rstrip("/").lower()
+                for s in config.all_sources()}
+    candidates = [s for s in sites
+                  if s["api"].rstrip("/").lower() not in existing]
+    failed: list[str] = []
+    if probe and candidates:
+        sem = asyncio.Semaphore(12)
+
+        async def _check(c):
+            async with sem:
+                try:
+                    return c, await asyncio.wait_for(
+                        providers.probe_source(c["api"], timeout=5.0),
+                        timeout=7)
+                except Exception:
+                    return c, {"ok": False}
+
+        checked = await asyncio.gather(*[_check(c) for c in candidates])
+        good = [c for c, p in checked if p.get("ok")]
+        failed = [c["name"] for c, p in checked if not p.get("ok")]
+    else:
+        good = candidates
+
+    result = config.add_sources(good, enabled=True, standalone=standalone)
+    if result["added"]:
+        _search_cache.clear()
+        _schedule_routes_refresh()
+
+    report = {
+        "preset": "custom" if url else preset,
+        "url": used_url,
+        "total": len(sites),
+        "candidates": len(candidates),
+        "added": len(result["added"]),
+        "added_names": result["added"][:40],
+        "duplicate": (len(sites) - len(candidates)) + result["duplicate"],
+        "failed": len(failed),
+        "failed_names": failed[:30],
+        "probed": bool(probe),
+        "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    config.save({"lunatv_last_sync": report})
+    return {"code": 0, "msg": "", "data": report}
 
 
 @app.post("/v/api/ext/source/add")

@@ -22,6 +22,23 @@ https://站点地址/api.php/provide/vod/at/json
 
 返回 `{"code":1,"list":[{vod_name, vod_play_url, ...}]}` 即被识别。添加后可用「测试 / 全部测速」验证连通性（耗时、命中条数、直链数），也可用左侧「导入订阅」从 TVBox 配置批量导入。请只接入你有权访问的接口。
 
+### 一键拉取 LunaTV 源（可选）
+
+「资源站」页顶部提供 **LunaTV 一键拉源**：从公开的
+[`hafrey1/LunaTV-config`](https://github.com/hafrey1/LunaTV-config) 拉取现成的苹果 CMS
+源清单，去重后批量导入。可选预设：
+
+| 预设 | 说明 |
+|---|---|
+| 精简版 `jin18` | 仅普通内容，源少而精（推荐） |
+| 精简+ `jingjian` | 在精简版基础上补充更多源（含成人源） |
+| 完整版 `full` | 仓库当前全部源 |
+
+也可粘贴任意 LunaTV / MoonTV 配置地址（JSON，或 Base58 编码的 `.txt` 订阅）。
+默认「导入前测活」：并发探测通过后才加入，耗时取决于源数量；关闭则全部直接导入。
+抓取走「导入订阅」页配置的**订阅代理**（GitHub 直连失败时自动尝试国内镜像），
+播放与搜索流量仍为直连。该功能只是导入第三方清单，**源的可用性与合法性由使用者自行核实**。
+
 未配置源时：在线搜索、热门榜单四库、海量分类四库均无内容；本地媒体库不受任何影响。
 
 ## 适配版本
@@ -96,6 +113,7 @@ proxy/
   history.py        在线播放进度（继续观看）
   config.py         可热加载配置：源增删、启用开关、噪音过滤、在线前排
   tvbox.py          TVBox 订阅导入（采集接口 + csp/drpy 扩展源）
+  lunatv.py         LunaTV / MoonTV 配置订阅拉取与解析（JSON / Base58）
   admin_ui.py       单文件管理页（源管理/测速/设置）
   updater.py        自更新（GitHub Releases）
   fnmedia_authx.py  官方 authx 签名客户端（MD5 + apiKey）

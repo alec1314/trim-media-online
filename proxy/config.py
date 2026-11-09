@@ -76,6 +76,8 @@ DEFAULTS = {
     "ad_filter_enabled": True,
     # 播放时动态检测（无订阅 rules 时，按 DISCONTINUITY 分段+时长/CDN/位置识别广告段）。
     "ad_filter_dynamic": True,
+    # 最近一次 LunaTV 源订阅导入的报告（仅展示用，不参与运行逻辑）。
+    "lunatv_last_sync": {},
 }
 
 # 已废弃、需从旧配置里清除的键
@@ -221,9 +223,48 @@ class Config:
             self._persist(cfg)
             return True, sid
 
+    def add_sources(self, items: list[dict], enabled: bool = True,
+                    standalone: bool = False) -> dict:
+        """批量添加自定义源（单次落盘）；按 API 地址去重。
+
+        items: [{"name": ..., "api": ...}]。返回
+        {"added": [name...], "duplicate": n, "invalid": n}。
+        """
+        added: list[str] = []
+        duplicate = invalid = 0
+        with _LOCK:
+            cfg = self.get()
+            seen = {s.get("api", "").rstrip("/").lower()
+                    for s in cfg["sources"]}
+            ids = {s["id"] for s in cfg["sources"]}
+            for it in items or []:
+                api = str((it or {}).get("api") or "").strip()
+                name = str((it or {}).get("name") or "").strip()
+                if not api.startswith(("http://", "https://")):
+                    invalid += 1
+                    continue
+                norm = api.rstrip("/").lower()
+                sid = self.make_custom_id(api)
+                if norm in seen or sid in ids:
+                    duplicate += 1
+                    continue
+                if not name:
+                    name = api.split("/")[2]
+                cfg["sources"].append(
+                    {"id": sid, "name": name[:40], "api": api,
+                     "enabled": bool(enabled), "standalone": bool(standalone),
+                     "builtin": False})
+                seen.add(norm)
+                ids.add(sid)
+                added.append(name[:40])
+            if added:
+                self._persist(cfg)
+        return {"added": added, "duplicate": duplicate, "invalid": invalid}
+
     def source_priorities(self) -> dict:
         with _LOCK:
             return dict(self.get().get("source_priority") or {})
+
 
     def set_source_priority(self, mapping: dict) -> tuple[bool, str]:
         """整体保存源优先级（id -> 整数权重），忽略未知源与非法值。"""

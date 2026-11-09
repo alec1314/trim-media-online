@@ -327,6 +327,25 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
       <h2 class="page-title">资源站</h2>
       <p class="page-desc">标准苹果 CMS 源与扩展源；启用后进入聚合搜索与海量片库。</p>
       <div class="card">
+        <div class="card-title">LunaTV 一键拉源 <span class="badge" id="lunaBadge">未同步</span>
+          <button class="small" style="margin-left:auto" onclick="loadLunaStatus()">刷新状态</button>
+        </div>
+        <p class="card-sub">从 <code>hafrey1/LunaTV-config</code> 拉取现成的苹果 CMS 源清单，自动去重导入；也可粘贴任意 LunaTV / MoonTV 配置地址（JSON 或 Base58 <code>.txt</code>）。抓取走「导入订阅」页配置的订阅代理。请仅接入你有权访问的接口。</p>
+        <div class="row" style="display:grid;grid-template-columns:190px 1fr 130px auto;gap:10px;align-items:center">
+          <select id="lunaPreset">
+            <option value="jin18">精简版（推荐）</option>
+            <option value="jingjian">精简+</option>
+            <option value="full">完整版</option>
+          </select>
+          <input type="text" id="lunaUrl" placeholder="可选：自定义配置 URL，留空使用上方预设"/>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
+            <input type="checkbox" id="lunaProbe" checked style="width:15px;height:15px;accent-color:var(--accent)"/>导入前测活</label>
+          <button class="primary small" style="justify-content:center" onclick="lunaImport(this)">拉取并导入</button>
+        </div>
+        <div class="hint" id="lunaMsg">尚未同步。拉取结果会显示在这里。</div>
+      </div>
+
+      <div class="card">
         <div class="card-title">资源站列表 <span class="badge" id="srcCount"></span>
           <button class="small" style="margin-left:auto" onclick="testAll()">全部测速</button>
           <button class="small" onclick="restoreBuiltin()">清空全部源</button>
@@ -547,7 +566,7 @@ async function switchPage(page){
   if(page==="overview"){renderOverview();startLivePoll();}
   if(page==="library"){loadLibs().then(renderLibrary);}
   if(page==="quality")renderQuality();
-  if(page==="sources"){try{loadHealth();}catch(e){}}
+  if(page==="sources"){try{loadHealth();}catch(e){}try{loadLunaStatus();}catch(e){}}
   if(page==="tvbox"){try{loadGuardZone();}catch(e){}try{gbInit();}catch(e){}}
   if(page==="importsub"){try{if(!CFG)await loadStatus();}catch(e){}try{if(typeof initSubProxy==="function")initSubProxy();}catch(e){}try{loadAdfilter();}catch(e){}try{if(typeof loadSpiderMgmt==="function")loadSpiderMgmt();}catch(e){}try{if(typeof loadDrpyMgmt==="function")loadDrpyMgmt();}catch(e){}}
   if(page==="about"){loadUpdate(false);}
@@ -1034,6 +1053,41 @@ async function addSource(){
     await loadStatus();const tr=$("srcRows").querySelector(`tr[data-id="${r.data.id}"]`);if(tr&&!standalone)testOne(r.data.id,tr);}
   else toast(r.msg||"添加失败","fail");
 }
+// ---------- LunaTV 一键拉源 ----------
+function lunaSyncText(d){
+  let s=`已添加 ${d.added} 个源（配置共 ${d.total}，已存在 ${d.duplicate}`;
+  if(d.probed)s+=`，测活失败 ${d.failed}`;
+  s+=`）`;
+  if(d.failed_names&&d.failed_names.length)s+=`；失败：${d.failed_names.slice(0,6).join("、")}${d.failed_names.length>6?" 等":""}`;
+  return s;
+}
+async function loadLunaStatus(){
+  try{
+    const r=await jget("/v/api/ext/lunatv/status");
+    const d=r.data||{},last=d.last||{};
+    $("lunaBadge").textContent=last.at?("上次 "+last.at):"未同步";
+    $("lunaMsg").textContent=last.at
+      ? (lunaSyncText(last)+" · "+(last.probed?"已测活":"未测活")+(d.proxy?" · 经订阅代理":" · 直连"))
+      : "尚未同步。拉取结果会显示在这里。";
+  }catch(e){}
+}
+async function lunaImport(btn){
+  const preset=$("lunaPreset").value,url=$("lunaUrl").value.trim(),probe=$("lunaProbe").checked;
+  const old=btn.textContent;
+  btn.disabled=true;btn.textContent="拉取中…";
+  $("lunaMsg").textContent="正在从 GitHub 拉取配置"+(probe?"并测活，源较多时可能需要数十秒…":"…");
+  try{
+    const r=await jpost("/v/api/ext/lunatv/import",{preset,url,probe});
+    if(r.code!==0){$("lunaMsg").textContent=r.msg||"导入失败";toast(r.msg||"导入失败","fail");return;}
+    const d=r.data||{};
+    $("lunaMsg").textContent=lunaSyncText(d)+` · ${d.at||""}`;
+    toast(d.added?`已导入 ${d.added} 个源`:"没有新增源（已全部存在）",
+          d.added?"ok":"fail");
+    await loadStatus();renderSources();await loadLunaStatus();
+  }catch(e){$("lunaMsg").textContent="导入失败："+e;toast("导入失败："+e,"fail");}
+  finally{btn.disabled=false;btn.textContent=old;}
+}
+
 // ---------- 订阅抓取代理（仅拉订阅/jar/脚本，不影响播放） ----------
 function initSubProxy(){
   const p=(CFG&&CFG.subscription_proxy)||"";
@@ -1339,6 +1393,7 @@ async function init(){
   $("fastestMax").value=CFG.line_fastest_max||6;
   $("fastestTimeout").value=CFG.line_fastest_timeout||4;
   renderKw();renderSources();
+  try{loadLunaStatus();}catch(e){}
   const gs=$("globalState");gs.textContent="接管运行中 · 已缓存 "+STATUS.cached_titles;gs.className="dot ok";
   const ed=$("aboutEdition");if(ed)ed.textContent=(FEAT_DDUO?"完整版（本地全功能）":"公开版")+" · 在飞牛原生搜索与媒体库中注入在线影视";
   loadOnline();
