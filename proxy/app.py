@@ -35,12 +35,9 @@ import providers
 import lunatv
 import sourcehealth
 import client as clientmod
-import live as livemod
 import inject as inj
 import config as cfgmod
 from config import config
-import hot as hotmod
-from hot import hot_cache
 import charts as chartmod
 from charts import chart_cache
 import catalog as catalogmod
@@ -49,7 +46,6 @@ import history as histmod
 from history import history
 import marks as marksmod
 from marks import marks
-import updater
 from store import (store, make_guid, media_guid, video_guid, is_online_guid,
                    season_guid, episode_guid, ep_media_guid, ep_video_guid)
 
@@ -425,12 +421,6 @@ async def lifespan(app: FastAPI):
     app.state.health_task = asyncio.create_task(_health_flush_loop())
 
 
-    # 后台只读检查 GitHub 更新（仅提示，绝不自动安装）
-    app.state.stop_update = asyncio.Event()
-    app.state.update_task = asyncio.create_task(
-        updater.periodic_loop(app.state.stop_update))
-
-
     try:
         yield
     finally:
@@ -447,12 +437,6 @@ async def lifespan(app: FastAPI):
         try:
             await asyncio.to_thread(sourcehealth.flush)
         except Exception:
-            pass
-        try:
-            app.state.stop_update.set()
-            app.state.update_task.cancel()
-            await app.state.update_task
-        except (asyncio.CancelledError, Exception):
             pass
         await app.state.up.aclose()
         await app.state.ext.aclose()
@@ -507,90 +491,7 @@ async def _access(request: Request, call_next):
         _log.info("%s %s -> %s", request.method,
                   (p + ("?" + request.url.query if request.url.query else ""))[:120],
                   resp.status_code)
-    _live_record(request, resp.status_code, p)
     return resp
-
-
-# 实时诊断：需要展示的播放链路路径 -> 阶段标签
-_LIVE_STAGES = [
-    ("/v/api/v1/mediadb/list", "library", "local"),
-    ("/v/api/v1/mdb/", "library", "local"),
-    ("/v/api/v1/mediadb/sum", "library", "mixed"),
-    ("/v/api/v1/item/list", "browse", "local"),
-    ("/v/api/v1/search/list", "search", "mixed"),
-    ("/v/api/v1/item/", "detail", "mixed"),
-    ("/v/api/v1/season/list", "season", "local"),
-    ("/v/api/v1/episode/list", "episode", "local"),
-    ("/v/api/v1/stream/list", "streams", "local"),
-    ("/v/api/v1/play/info", "play", "local"),
-    ("/v/api/v1/stream", "play", "local"),
-    ("/v/api/v1/play/play", "play", "local"),
-    ("/v/api/v1/media/range/", "media", "local"),
-    ("/v/api/v1/favorite/list", "favorite", "mixed"),
-    ("/v/api/v1/play/list", "history", "mixed"),
-]
-# 即使走了官方透传，也属于“本地与官方合并”的路径（不能简单判为纯透传）
-_LIVE_MERGE_PATHS = {"/v/api/v1/mediadb/list", "/v/api/v1/mediadb/sum",
-                     "/v/api/v1/search/list",
-                     "/v/api/v1/favorite/list", "/v/api/v1/play/list"}
-
-
-def _live_stage(p: str):
-    for pref, stage, origin in _LIVE_STAGES:
-        if p.startswith(pref):
-            return stage, origin
-    if p.startswith(ONLINE_PREFIX):
-        if p.endswith(".m3u8"):
-            return "hls", "local"
-        if p.endswith("/seg"):
-            return "seg", "local"
-        if p.endswith("/direct"):
-            return "direct", "local"
-        return "media", "local"
-    return None, None
-
-
-def _live_title_for(path: str, query_params) -> str:
-    """尽力从播放 URL 的 mg 反查片名，仅用于实时展示。"""
-    try:
-        if path.startswith(ONLINE_PREFIX):
-            mg = path[len(ONLINE_PREFIX) + 1:].split("/", 1)[0]
-            tgt = store.resolve_media_guid(mg)
-            if tgt:
-                return (tgt.get("ep_title") or tgt.get("title") or "")[:40]
-        if path.startswith("/v/api/v1/media/range/"):
-            mg = path.rsplit("/", 1)[-1]
-            tgt = store.resolve_media_guid(mg)
-            if tgt:
-                return (tgt.get("ep_title") or tgt.get("title") or "")[:40]
-    except Exception:
-        pass
-    return ""
-
-
-def _live_record(request: Request, status: int, path: str) -> None:
-    try:
-        stage, default_origin = _live_stage(path)
-        if not stage:
-            return
-        touched_up = bool(getattr(request.state, "live_upstream", False))
-        origin = getattr(request.state, "live_origin", "") or (
-            "mixed" if touched_up and path in _LIVE_MERGE_PATHS
-            else ("upstream" if touched_up else default_origin))
-        title = _live_title_for(path, request.query_params)
-        ip = request.headers.get("x-real-ip") or \
-            request.headers.get("x-forwarded-for", "").split(",")[0].strip() or \
-            (request.client.host if request.client else "")
-        note = ""
-        if status >= 400:
-            note = {403: "源站鉴权拒绝", 404: "无此片源/线路",
-                    500: "服务端错误", 502: "上游抓取失败",
-                    503: "暂无可播片源", 504: "上游超时"}.get(status, "请求失败")
-        livemod.record(request.headers.get("user-agent", ""), ip,
-                       request.method, path, request.url.query, status,
-                       origin, title=title, stage=stage, note=note)
-    except Exception:
-        pass  # 诊断本身绝不影响正常请求
 
 
 def up_client(req: Request) -> httpx.AsyncClient:
@@ -1010,113 +911,6 @@ def _brief_line_flags(brief: dict) -> tuple[str, int | None, set]:
     live = [g for g in grades if g != 3] or grades
     grade = min(live) if live else None
     return pan_label, grade, pan_keys
-
-
-# 向注入层提供海报角标（网盘名 + 健康等级），使所有 search_item 路径统一生效
-try:
-    inj.set_badge_provider(lambda b: _brief_line_flags(b)[:2])
-except Exception:  # noqa: BLE001
-    pass
-
-
-def _brief_poster_badged(brief: dict) -> str:
-    """按 brief 线路的网盘/健康情况生成带角标的海报路径。"""
-    cover = brief.get("poster") or ""
-    if not cover:
-        return ""
-    pan_label, grade, _ = _brief_line_flags(brief)
-    try:
-        return inj._poster_badged(cover, pan_label, grade)
-    except Exception:  # noqa: BLE001
-        return inj._poster(cover)
-
-
-def _hot_card(brief: dict, cat: str) -> dict:
-    row = inj.search_item(brief)
-    # 海报墙角标：网盘资源 + 源健康点（烧进海报图，原生库无需改 UI）
-    try:
-        bp = _brief_poster_badged(brief)
-        if bp:
-            row["poster"] = bp
-    except Exception:  # noqa: BLE001
-        pass
-    # 媒体库内不再重复显示【在线】前缀，让海报墙更接近原生媒体库体验
-    title = (brief.get("title") or "").strip()
-    remarks = (brief.get("remarks") or "").strip()
-    row["title"] = title + (f" ·{remarks}" if remarks else "")
-    row["ancestor_guid"] = HOT_LIB_GUIDS[cat]
-    row["ancestor_name"] = hot_cat_title(cat)
-    row["ancestor_category"] = hot_cat_category(cat)
-    row["video_guid"] = video_guid(brief["guid"])
-    return row
-
-
-def _hot_cat_items(cat: str) -> list[dict]:
-    return [b for b in hot_cache.items() if inj.hot_category(b) == cat]
-
-
-def _hot_rows_all(body: dict, cat: str) -> list[dict]:
-    items = _hot_cat_items(cat)
-    # parent_guid 可能用于目录/分组；热门库只有一层，非根 parent 直接为空。
-    parent = (body.get("parent_guid") or "").strip()
-    if parent:
-        return []
-    rows = [_hot_card(b, cat) for b in items]
-    tags = body.get("tags")
-    if isinstance(tags, dict):
-        wanted = set(tags.get("type") or [])
-        media_wanted = wanted & {"Movie", "TV", "Movie,TV"}
-        if "Movie,TV" in media_wanted:
-            media_wanted.discard("Movie,TV")
-            media_wanted.update({"Movie", "TV"})
-        if media_wanted:
-            rows = [r for r in rows if r.get("type") in media_wanted]
-        watched = str(tags.get("watched") or "")
-        if watched in {"0", "1"}:
-            want_watched = watched == "1"
-            filtered = []
-            for r in rows:
-                rec = history.get(r["guid"])
-                is_watched = bool(rec and rec.get("duration") and
-                                  int(rec.get("ts") or 0) >= int(rec.get("duration") or 0) * 0.95)
-                if is_watched == want_watched:
-                    filtered.append(r)
-            rows = filtered
-    elif isinstance(tags, list):
-        wanted = set(tags) & {"Movie", "TV"}
-        if wanted:
-            rows = [r for r in rows if r.get("type") in wanted]
-
-    rows = [_apply_marks(r) for r in rows]
-    if int(body.get("is_favorite") or 0):
-        rows = [r for r in rows if r.get("is_favorite")]
-    kw = str(body.get("keyword") or body.get("q") or body.get("title") or "").strip().lower()
-    if kw:
-        rows = [r for r in rows if kw in (r.get("title") or "").lower()]
-
-    col = body.get("sort_column", "create_time")
-    order = str(body.get("sort_type", "DESC")).upper()
-    reverse = order.lower() != "asc"
-
-    def rank(r: dict):
-        g = r["guid"]
-        b = hot_cache.get_guid(g) or {}
-        h = b.get("hot") or {}
-        return (h.get("rank") if reverse else -int(h.get("rank") or 0))
-
-    if col == "sort_title":
-        rows.sort(key=lambda r: (r.get("title") or ""), reverse=reverse)
-    elif col in ("release_date", "air_date", "year"):
-        rows.sort(key=lambda r: (r.get("release_date") or ""), reverse=reverse)
-    elif col in ("vote_average", "score"):
-        def score(r):
-            try:
-                return float(r.get("vote_average") or 0)
-            except ValueError:
-                return 0
-        rows.sort(key=lambda r: (score(r), rank(r)), reverse=True)
-    # create_time / 默认：保持 collect_hot 已计算好的热门顺序，不在这里二次排序。
-    return rows
 
 
 def _chart_rows_all(body: dict, cat: str) -> list[dict]:
@@ -3953,20 +3747,9 @@ async def _serve_online_poster(tok_path: str, request: Request) -> Response:
     except Exception:
         return _poster_fallback()
 
-    # 在海报上烧角标（网盘资源 / 源健康点）。GIF 不动，合成失败回退原图。
-    out_bytes, out_type = r.content, (ctype or "image/jpeg")
-    if want_badge and "gif" not in out_type:
-        try:
-            import posterbadge
-            if posterbadge.available():
-                badged = await asyncio.to_thread(
-                    posterbadge.badge, r.content, pan_label, health_grade)
-                if badged:
-                    out_bytes, out_type = badged, "image/jpeg"
-        except Exception:  # noqa: BLE001
-            pass
-    return Response(content=out_bytes, status_code=200,
-                    media_type=out_type,
+    # 角标合成已下线；旧 token 里的网盘/健康字段仅做兼容解析，不影响出图。
+    return Response(content=r.content, status_code=200,
+                    media_type=(ctype or "image/jpeg"),
                     headers={"Cache-Control": "max-age=86400",
                              "Access-Control-Allow-Origin": "*"})
 
@@ -4003,18 +3786,6 @@ async def ext_whoami(request: Request):
         "ua": request.headers.get("user-agent", "")}}
 
 
-@app.get("/v/api/ext/live")
-async def ext_live(request: Request):
-    """实时播放诊断：各端最近请求、当前播放会话、转发来源与错误。"""
-    return {"code": 0, "msg": "", "data": livemod.snapshot()}
-
-
-@app.post("/v/api/ext/live/clear")
-async def ext_live_clear(request: Request):
-    livemod.reset()
-    return {"code": 0, "msg": "", "data": True}
-
-
 @app.get("/v/api/ext/status")
 async def ext_status(request: Request):
     overrides = config.get().get("source_priority") or {}
@@ -4024,37 +3795,8 @@ async def ext_status(request: Request):
             "config": {k: v for k, v in config.get().items() if k != "admin_token"},
             "source_priority": priorities,
             "cached_titles": len(store._titles),
-            "hot": hot_cache.status(),
             "charts": chart_cache.status(),
             "catalog": catalog.status()}
-
-
-# --------------------------------------------------------------- 版本更新
-@app.get("/v/api/ext/update/check")
-async def ext_update_check(request: Request):
-    force = request.query_params.get("force") in ("1", "true", "yes")
-    return await updater.check(force=force)
-
-
-@app.get("/v/api/ext/update/status")
-async def ext_update_status(request: Request):
-    return updater.status()
-
-
-@app.post("/v/api/ext/update/now")
-async def ext_update_now(request: Request):
-    # 仅管理台显式触发；下载校验后交给 fnOS 应用中心正规升级（会短暂重启服务）。
-    # 该动作具备系统级副作用，要求显式确认 + 自定义头（跨站简单请求无法携带，
-    # 起到 CSRF 防护作用）；只读的检查/状态接口不加此限制。
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if request.headers.get("x-trim-online-admin") != "1" or body.get("confirm") is not True:
-        return JSONResponse({"code": 403,
-                             "msg": "需要在管理页显式确认后才能执行更新"},
-                            status_code=403)
-    return await updater.start_update()
 
 
 @app.post("/v/api/ext/source/priority")

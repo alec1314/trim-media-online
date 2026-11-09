@@ -100,14 +100,6 @@ label.field>span{display:block;color:var(--muted);font-size:12px;margin-bottom:4
 .subrow.ok span:first-child{color:var(--ok,#1a8d3a)}
 .subrow.muted{color:var(--muted)}
 
-/* ---------- 实时播放诊断 ---------- */
-.live-dev{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:8px 0;background:#fbfcfe}
-.live-rows{margin-top:6px;display:flex;flex-direction:column;gap:3px}
-.live-row{display:flex;align-items:center;gap:6px;font-size:12px;flex-wrap:wrap}
-.live-row .muted{font-size:11px}
-.live-dev details{margin-top:6px}
-.diag{background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:13px}
-
 /* ---------- 表格 ---------- */
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
@@ -219,25 +211,6 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
         <div class="card-title">本设备识别 <span class="badge" id="ovClientKind">-</span></div>
         <div class="hint" id="ovClient">读取中…</div>
         <div class="muted sm" id="ovClientUa" style="word-break:break-all"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">实时播放诊断
-          <span class="muted sm" style="font-weight:400">
-            <span class="dot ok" id="livePulse" style="margin-left:8px"><span id="liveState">实时</span></span>
-            <a href="#" id="liveClear" style="margin-left:10px">清空</a>
-            <a href="#" id="liveCopy" style="margin-left:10px">📋 复制诊断信息</a>
-          </span>
-        </div>
-        <div class="hint">显示各端（电视/手机/iOS/网页）最近 30 分钟的播放请求：走本地构造还是透传官方、当前在播、是否报错。每 3 秒刷新。</div>
-        <div id="liveDiagnosis" style="margin:6px 0"></div>
-        <div style="display:flex;gap:12px;flex-wrap:wrap;margin:6px 0 10px" class="sm muted">
-          <span>来源：<b style="color:var(--ok)">local</b> 插件构造</span>
-          <span><b style="color:#2563eb">mixed</b> 合并官方</span>
-          <span><b style="color:#b45309">upstream</b> 透传官方</span>
-          <span><b style="color:var(--err)">4xx/5xx</b> 出错</span>
-        </div>
-        <div id="liveDevices"><div class="muted sm">暂无播放活动（在电视或手机上播一部片即可看到）</div></div>
       </div>
 
       <div class="card">
@@ -497,29 +470,6 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
         <div class="hint" id="aboutEdition"></div>
       </div>
 
-      <div class="card" id="updCard">
-        <div class="card-title">🔄 版本更新</div>
-        <div class="stack sm">
-          <div class="muted">当前版本：<b id="updCur">…</b><span id="updEdition" class="muted"></span></div>
-          <div id="updBody" class="muted">正在检查更新…</div>
-          <div id="updActions" style="display:none;gap:8px;flex-wrap:wrap;align-items:center">
-            <button class="btn primary" id="updBtn">立即更新</button>
-            <button class="btn" id="updRefresh">重新检查</button>
-            <a class="btn" id="updLink" target="_blank" rel="noopener" style="text-decoration:none">查看 Release</a>
-          </div>
-          <div id="updProgress" class="hint" style="display:none"></div>
-          <details style="margin-top:4px">
-            <summary class="muted sm" style="cursor:pointer">下载慢 / 直连失败？点此设置更新代理（可选）</summary>
-            <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
-              <input id="updProxy" type="text" class="input" placeholder="http://用户:密码@代理IP:端口（仅用于下载更新，留空直连）"
-                     style="flex:1;min-width:240px">
-              <button class="btn" id="updProxySave">保存代理</button>
-            </div>
-            <div class="hint">仅本机保存、不随安装包分发；保存后点“重新检查/立即更新”生效。</div>
-          </details>
-        </div>
-      </div>
-
       <div class="card">
         <div class="card-title">⚖️ 免责声明与版权声明</div>
         <div class="stack sm muted" style="line-height:1.7">
@@ -563,122 +513,15 @@ async function switchPage(page){
   $$(".page").forEach(el=>el.classList.toggle("active",el.id==="page-"+page));
   $$("[data-page]").forEach(el=>el.classList.toggle("active",el.dataset.page===page));
   window.scrollTo(0,0);
-  if(page==="overview"){renderOverview();startLivePoll();}
+  if(page==="overview"){renderOverview();}
   if(page==="library"){loadLibs().then(renderLibrary);}
   if(page==="quality")renderQuality();
   if(page==="sources"){try{loadHealth();}catch(e){}try{loadLunaStatus();}catch(e){}}
   if(page==="tvbox"){try{loadGuardZone();}catch(e){}try{gbInit();}catch(e){}}
   if(page==="importsub"){try{if(!CFG)await loadStatus();}catch(e){}try{if(typeof initSubProxy==="function")initSubProxy();}catch(e){}try{loadAdfilter();}catch(e){}try{if(typeof loadSpiderMgmt==="function")loadSpiderMgmt();}catch(e){}try{if(typeof loadDrpyMgmt==="function")loadDrpyMgmt();}catch(e){}}
-  if(page==="about"){loadUpdate(false);}
+  if(page==="about"){}
 }
 $$("[data-page]").forEach(b=>b.addEventListener("click",()=>switchPage(b.dataset.page)));
-
-/* ---------- 版本更新 ---------- */
-let UPD_TIMER=null;
-function $u(id){return document.getElementById(id);}
-function updEdLabel(ed){return ed==="full"?"全功能版":"轻量版";}
-async function loadUpdate(force){
-  const rf=$u("updRefresh"),body=$u("updBody");
-  if(force){
-    if(rf){rf.disabled=true;rf.textContent="检查中…";}
-    if(body)body.innerHTML='<span style="color:var(--ok,#16a34a)">正在向 GitHub 检查更新…</span>';
-  }
-  try{
-    const r=await jget("/v/api/ext/update/check"+(force?"?force=1":""));
-    renderUpdate(r);
-    if(force){
-      const u=r.update;
-      if(r.status==="error")toast("检查失败："+(r.last_error||"无法访问 GitHub"),"fail");
-      else if(u&&u.update_available)toast("发现新版本 v"+u.version);
-      else toast("检查完成：已是最新版本"+(u&&u.version?" v"+u.version:""));
-    }
-  }catch(e){
-    $u("updCur").textContent="—";
-    body.innerHTML='<span style="color:var(--warn,#b45309)">检查更新失败：'+esc(e.message)+'（可能无法访问 GitHub）</span>';
-    $u("updActions").style.display="flex";$u("updBtn").style.display="none";
-    if(force)toast("检查更新失败："+e.message,"fail");
-  }finally{
-    if(rf){rf.disabled=false;rf.textContent="重新检查";}
-  }
-}
-function renderUpdate(r){
-  $u("updCur").textContent=r.current_version||"—";
-  $u("updEdition").textContent=" · "+updEdLabel(r.edition);
-  const u=r.update;
-  const busy=["checking","downloading","installing"].includes(r.status);
-  const body=$u("updBody"),actions=$u("updActions"),btn=$u("updBtn"),
-        prog=$u("updProgress"),link=$u("updLink");
-  if(link){if(u&&u.html_url){link.href=u.html_url;link.style.display="";}else{link.style.display="none";}}
-  if(busy){
-    body.innerHTML='<span style="color:var(--ok,#16a34a)">'+esc(r.progress||"处理中…")+'</span>';
-    actions.style.display="flex";btn.style.display="none";
-    prog.style.display="";prog.textContent="请稍候，安装完成后服务会自动重启，管理页稍后刷新即可。";
-    return;
-  }
-  if(r.status==="done"){
-    body.innerHTML='<span style="color:var(--ok,#16a34a)">✅ 已更新到 v'+esc(r.updated_version||"")+'，服务正在重启…请稍后刷新页面。</span>';
-    actions.style.display="flex";btn.style.display="none";prog.style.display="none";return;
-  }
-  if(r.status==="error" && (!u || !u.update_available)){
-    body.innerHTML='<span style="color:var(--warn,#b45309)">'+esc(r.last_error||"检查更新失败")+'</span>';
-    actions.style.display="flex";btn.style.display="none";prog.style.display="none";return;
-  }
-  if(u && u.update_available){
-    const edTip=u.edition==="full"?"（全功能版）":"（轻量版）";
-    const size=u.asset_size?` · ${(u.asset_size/1048576).toFixed(1)}MB`:"";
-    body.innerHTML='<div><span style="color:var(--ok,#16a34a);font-weight:600">发现新版本 v'+esc(u.version)+edTip+'</span>'+size+'</div>'
-      +'<div class="muted sm" style="white-space:pre-wrap;margin-top:6px;max-height:180px;overflow:auto">'+esc((u.notes||"").slice(0,1200))+'</div>';
-    actions.style.display="flex";btn.style.display="";btn.disabled=false;btn.textContent="立即更新到 v"+u.version;
-    prog.style.display="none";
-  }else{
-    const v=u&&u.version?("v"+u.version):"";
-    const lc=r.last_check?(' · 上次检查 ' + new Date(r.last_check*1000).toLocaleString()):"";
-    body.innerHTML='<span style="color:var(--muted,#666)">已是最新版本'+(v?"（GitHub 最新 "+v+"）":"")+'。</span>'
-      +'<div class="hint sm" style="margin-top:4px">'+lc+'</div>';
-    actions.style.display="flex";btn.style.display="none";prog.style.display="none";
-  }
-}
-async function pollUpdate(){
-  try{
-    const r=await jget("/v/api/ext/update/status");
-    renderUpdate(r);
-    if(["downloading","installing"].includes(r.status)){
-      UPD_TIMER=setTimeout(pollUpdate,1500);
-    }else{UPD_TIMER=null;}
-  }catch(e){}
-}
-document.addEventListener("DOMContentLoaded",()=>{
-  const btn=document.getElementById("updBtn"),rf=document.getElementById("updRefresh");
-  if(btn)btn.addEventListener("click",async()=>{
-    if(!confirm("将从 GitHub 下载与当前版本类型一致的安装包（自动校验 sha256），并通过飞牛应用中心覆盖安装。\n\n安装期间本服务会短暂停止并自动重启（约十几秒），播放记录与已导入源会保留。\n\n确定立即更新？"))return;
-    btn.disabled=true;btn.textContent="开始更新…";
-    try{
-      const rr=await fetch("/v/api/ext/update/now",{method:"POST",
-        headers:{"Content-Type":"application/json","x-trim-online-admin":"1"},
-        body:JSON.stringify({confirm:true})});
-      const r=await rr.json();
-      if(r.code!==0){alert(r.msg||"更新启动失败");btn.disabled=false;loadUpdate(true);return;}
-      pollUpdate();
-    }catch(e){alert("更新启动失败："+e.message);btn.disabled=false;}
-  });
-  if(rf)rf.addEventListener("click",()=>loadUpdate(true));
-  const ps=document.getElementById("updProxySave");
-  if(ps)ps.addEventListener("click",async()=>{
-    const v=(document.getElementById("updProxy").value||"").trim();
-    if(v && !/^(https?|socks5h?):\/\//.test(v)){alert("代理地址需以 http:// 或 https:// 或 socks5:// 开头");return;}
-    try{
-      const r=await jpost("/v/api/ext/config",{update_proxy:v});
-      if(r&&r.ok!==false){ps.textContent="已保存 ✓";setTimeout(()=>ps.textContent="保存代理",1500);loadUpdate(true);}
-      else{alert("保存失败");}
-    }catch(e){alert("保存失败："+e.message);}
-  });
-  // 回填已保存的更新代理
-  (async()=>{try{
-    const r=await jget("/v/api/ext/status");
-    const inp=document.getElementById("updProxy");
-    if(inp&&r.config&&r.config.update_proxy)inp.value=r.config.update_proxy;
-  }catch(e){}})();
-});
 
 /* ---------- 概览 ---------- */
 /* ---------- 本设备识别（自检） ---------- */
@@ -695,132 +538,8 @@ async function loadWhoami(){
   }catch(e){$("ovClient").textContent="识别失败："+e;}
 }
 
-/* ---------- 实时播放诊断 ---------- */
-let LIVE_TIMER=null;
-const LIVE_STAGE={library:"媒体库",browse:"片单",search:"搜索",detail:"详情",
-  season:"季",episode:"选集",streams:"线路",play:"起播",media:"播放",
-  hls:"清单",seg:"分片",direct:"直链",favorite:"收藏",history:"历史"};
-const LIVE_ORIGIN={local:["local","var(--ok)"],mixed:["mixed","#2563eb"],
-  upstream:["upstream","#b45309"],redirect:["redirect","#7c3aed"]};
+/* ---------- 通用小工具 ---------- */
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
-function ago(a){return a<5?"刚刚":a<60?Math.floor(a)+"秒前":Math.floor(a/60)+"分前";}
-function liveOrigin(o){const [t,col]=LIVE_ORIGIN[o]||[o,"var(--muted)"];
-  return `<span class="tag" style="color:${col};background:transparent;border:1px solid ${col}33">${t}</span>`;}
-async function loadLive(){
-  if(!document.getElementById("liveDevices"))return;
-  let d;
-  try{ d=(await jget("/v/api/ext/live")).data||{devices:[]}; }
-  catch(e){ $("liveState").textContent="连接失败"; $("livePulse").className="dot bad"; return; }
-  $("liveState").textContent="实时"; $("livePulse").className="dot ok";
-  LIVE_NOW=d.now||Date.now()/1000;
-  const devs=d.devices||[];
-  if(!devs.length){$("liveDevices").innerHTML='<div class="muted sm">暂无播放活动（在电视或手机上播一部片即可看到）</div>';return;}
-  $("liveDevices").innerHTML=devs.map(dv=>{
-    const kindColor={tv:"#b45309",android:"var(--ok)",ios:"#2563eb",web:"#7c3aed"}[dv.kind]||"var(--muted)";
-    const sess=dv.session;
-    const sessHtml=sess?`<div class="sm" style="margin-top:4px">
-        ${sess.error?'<span class="tag amber">播放异常</span>':'<span class="tag">在播</span>'}
-        <b>${esc(sess.title||"（未知名）")}</b>
-        <span class="muted">· ${LIVE_STAGE[sess.stage]||sess.stage} · ${ago((d.now||dv.seen)-sess.at)}前</span>
-        ${sess.error?`<div class="sm" style="color:var(--err);margin-top:2px">⚠ ${esc(sess.error)}</div>`:""}
-      </div>`:"";
-    const errBadge=dv.errors?` <span style="color:var(--err);font-weight:700">· ${dv.errors} 次错误</span>`:"";
-    const rows=(dv.events||[]).slice(0,8).map(e=>{
-      const st=e.status;const col=st>=400?"var(--err)":(st>=300?"#7c3aed":"var(--ok)");
-      return `<div class="live-row">
-        <span style="color:${col};font-weight:600;min-width:34px;display:inline-block">${st}</span>
-        ${liveOrigin(e.origin)}
-        <span class="tag" style="background:#eef1f5;color:var(--muted)">${LIVE_STAGE[e.stage]||e.stage}</span>
-        ${e.title?`<span class="sm">${esc(e.title)}</span>`:""}
-        <span class="muted sm" style="margin-left:auto;white-space:nowrap">${e.note?esc(e.note):""} ${ago((d.now||dv.seen)-e.t)}</span>
-      </div>`;
-    }).join("");
-    return `<div class="live-dev">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span class="badge" style="background:${kindColor}18;color:${kindColor}">${esc(dv.label)}</span>
-        <span class="muted sm">${esc(dv.ip)} · ${dv.reqs} 请求${errBadge} · 最近 ${ago(dv.ago)}</span>
-      </div>
-      ${sessHtml}
-      <div class="live-rows">${rows}</div>
-      <details class="muted sm"><summary style="cursor:pointer">UA</summary><span style="word-break:break-all">${esc(dv.ua)}</span></details>
-    </div>`;
-  }).join("");
-  renderDiagnosis(devs);
-}
-
-/* ---------- 错误自动归因 ---------- */
-let LIVE_DATA=[];let LIVE_NOW=0;
-const STAGE_NAME={library:"媒体库",browse:"片单",search:"搜索",detail:"详情",
-  season:"季",episode:"选集",streams:"线路",play:"起播",media:"播放",
-  hls:"清单",seg:"分片",direct:"直链",favorite:"收藏",history:"历史"};
-// 归因规则：按 阶段+状态+来源 推断根因与建议
-function diagnoseDevice(dv){
-  const errs=(dv.events||[]).filter(e=>e.err);
-  if(!errs.length)return null;
-  const byCode={};errs.forEach(e=>byCode[e.status]=(byCode[e.status]||0)+1);
-  const first=errs[errs.length-1]; // 时间最早的错误
-  const last=errs[0];
-  let cause="",fix="",severity="warn";
-  const st=last.status, stage=last.stage, origin=last.origin;
-  if(st===403){
-    if(["seg","hls","direct","media"].includes(stage)){cause="源站/CDN 鉴权拒绝（防盗链或链接过期）";fix="该资源站该线路受限，请切换其它线路或换源；属源站问题，非插件故障。";}
-    else if(origin==="upstream"){cause="飞牛官方后端返回 403（权限/登录态）";fix="检查飞牛账号登录与媒体库访问权限。";}
-    else{cause="请求被拒绝（403）";fix="重试或更换线路。";}
-  }else if(st===404){
-    if(["hls","seg","direct","media"].includes(stage)){cause="该线路解析不出可播地址（片源失效/无 HLS）";fix="播放源本身问题：请切换线路或换一个同名资源。";severity="src";}
-    else if(stage==="detail"||stage==="browse"){cause="条目尚未解析出片源或已失效";fix="稍后重试，或用顶部搜索同名资源。";}
-    else{cause="资源不存在（404）";fix="刷新或换源。";}
-  }else if(st===502||st===504){
-    cause=stage==="seg"?"分片上游抓取失败/超时":"插件向上游或资源站取数失败（502/504）";
-    fix="资源站临时抖动，通常会自动重试；若反复出现请切换线路/源。";
-  }else if(st===503){cause="暂无可播片源";fix="该条目暂未匹配到可播资源，稍后再试或搜索同名。";}
-  else if(st===500){cause="服务端处理错误（500）";fix="请连同下方诊断信息反馈，多为某个异常响应头/数据形态，会持续完善兼容。";severity="err";}
-  else if(origin==="upstream"&&st>=400){cause=`飞牛官方后端返回 ${st}`;fix="非插件注入路径，检查官方服务/网络。";}
-  else{cause=`请求失败（HTTP ${st}，环节：${STAGE_NAME[stage]||stage}）`;fix="重试；如反复出现请复制诊断信息反馈。";}
-  return {dv,cause,fix,severity,st,stage:STAGE_NAME[stage]||stage,
-    at:last?ago(LIVE_NOW-last.t):"",count:errs.length,byCode};
-}
-function renderDiagnosis(devs){
-  LIVE_DATA=devs;
-  const box=$("liveDiagnosis");if(!box)return;
-  const findings=devs.map(diagnoseDevice).filter(Boolean);
-  if(!findings.length){box.innerHTML="";return;}
-  const cls={warn:"amber",src:"",err:""};
-  box.innerHTML=findings.slice(0,3).map(f=>{
-    const color=f.severity==="err"?"var(--err)":(f.severity==="src"?"#2563eb":"#b45309");
-    return `<div class="diag" style="border-left:3px solid ${color}">
-      <div><b style="color:${color}">${esc(f.dv.label)}</b> · ${esc(f.stage)} · ${f.count} 次错误
-        ${f.dv.session&&f.dv.session.title?(" · "+esc(f.dv.session.title)):""}</div>
-      <div class="sm" style="margin-top:2px"><b>归因：</b>${esc(f.cause)}</div>
-      <div class="sm muted" style="margin-top:2px"><b>建议：</b>${esc(f.fix)}</div>
-    </div>`;
-  }).join("");
-}
-async function copyDiagnosis(){
-  try{
-    const devs=LIVE_DATA;
-    const now=new Date();
-    const lines=[];
-    lines.push("trim-media-online 播放诊断 · "+now.toLocaleString());
-    lines.push("服务: "+location.host+" · 设备数 "+devs.length);
-    devs.forEach((dv,i)=>{
-      lines.push("");
-      lines.push(`[${i+1}] ${dv.label} · ${dv.ip} · 请求${dv.reqs} 错误${dv.errors} · 最近${ago(dv.ago)}`);
-      lines.push("UA: "+dv.ua);
-      if(dv.session)lines.push("当前: "+(dv.session.title||"")+" · 环节"+(STAGE_NAME[dv.session.stage]||dv.session.stage)+(dv.session.error?(" · 异常 "+dv.session.error):" · 正常"));
-      const f=diagnoseDevice(dv);
-      if(f){lines.push("归因: "+f.cause);lines.push("建议: "+f.fix);}
-      (dv.events||[]).slice(0,12).reverse().forEach(e=>{
-        lines.push(`  ${e.status} [${e.origin}] ${STAGE_NAME[e.stage]||e.stage} ${e.p.replace(/[&<>]/g,"")} ${e.note||""}`);
-      });
-    });
-    const text=lines.join("\n");
-    try{await navigator.clipboard.writeText(text);}
-    catch(_){const ta=document.createElement("textarea");ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand("copy");ta.remove();}
-    toast("诊断信息已复制，可直接粘贴反馈");
-  }catch(e){toast("复制失败："+e,"fail");}
-}
-function startLivePoll(){ if(LIVE_TIMER)return; LIVE_TIMER=setInterval(loadLive,3000); loadLive(); }
 
 function renderOverview(){
   if(!STATUS)return;
@@ -1399,11 +1118,7 @@ async function init(){
   loadOnline();
   renderOverview();
   loadWhoami();
-  startLivePoll();
 }
-$("liveClear").addEventListener("click",async e=>{e.preventDefault();
-  try{await fetch("/v/api/ext/live/clear",{method:"POST"});await loadLive();toast("已清空实时记录");}catch(_){}});
-$("liveCopy").addEventListener("click",e=>{e.preventDefault();copyDiagnosis();});
 $("kwAdd").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();addKw();}});
 $("kw").addEventListener("input",()=>{clearTimeout(window._t);window._t=setTimeout(loadOnline,250);});
 init().catch(e=>{const gs=$("globalState");gs.textContent="未接管/接口不可用";gs.className="dot bad";console.error(e);});
