@@ -15,11 +15,15 @@ _STATE = Path(__file__).resolve().parent.parent / "state" / "history.json"
 _LOCK = threading.RLock()
 _FLUSH_INTERVAL = 3.0
 _MAX = 500
+# 客户端进入播放页会先报 ts=0，随后从 0 起播、续播 seek 才落地；这段窗口里
+# 上报的极小 ts 是起播抖动，不能覆盖已存进度（否则快速退出就丢进度）。
+_ENTRY_WINDOW = 90.0
 
 
 class History:
     def __init__(self):
         self._rec: dict[str, dict] = {}
+        self._zero_at: dict[str, float] = {}  # ig -> 最近一次进入播放页(ts=0)时刻
         self._last_flush = 0.0
         self._dirty = False
         self._load()
@@ -65,12 +69,21 @@ class History:
             return False
         with _LOCK:
             prev = self._rec.get(ig, {})
+            now = time.time()
             ts = max(0, int(float(body.get("ts", 0) or 0)))
             prev_ts = int(prev.get("ts", 0) or 0)
+            reset = bool(body.get("reset"))
+            if ts == 0:
+                self._zero_at[ig] = now  # 进入播放页（先报 ts=0）
             # 播放器每次进入播放页会先上报 ts=0，不能把已看进度清零；除此之外
             # 以最后一次上报为准（包括用户向前拖动后的回退），跨端续播才准确。
-            if ts == 0 and prev_ts >= 30 and not body.get("reset"):
+            if ts == 0 and prev_ts >= 30 and not reset:
                 ts = prev_ts
+            elif ts < prev_ts and not reset:
+                # 进入播放页后的窗口期内，播放器从 0 起播、续播 seek 尚未落地，
+                # 此间上报的小 ts 是起播抖动，保持已存进度不被覆盖。
+                if now - self._zero_at.get(ig, 0.0) < _ENTRY_WINDOW:
+                    ts = prev_ts
             duration = int(float(body.get("duration", 0) or 0))
             rec = {
                 "item_guid": ig,

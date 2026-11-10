@@ -2495,10 +2495,18 @@ def _canonical_record_guid(body: dict) -> str:
             is_tv = False
         if is_tv:
             mi = re.search(r"[?&]index=(\d+)", link)
-            idx = int(mi.group(1)) if mi else 0
-            eg = episode_guid(title_guid, "", idx)
-            if store.get_episode(eg):
-                return eg
+            if mi:
+                eg = episode_guid(title_guid, "", int(mi.group(1)))
+                if store.get_episode(eg):
+                    return eg
+            else:
+                # play_link 未带集号：落到正在看的那一集（与卡片/继续观看一致），
+                # 而不是固定第 1 集，否则跨端进度会串集。
+                egs = store.tv_episode_guids(title_guid)
+                if egs:
+                    eg, _ts = history.resume_episode(egs)
+                    if eg and store.get_episode(eg):
+                        return eg
         return title_guid
     return ""
 
