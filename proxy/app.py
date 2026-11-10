@@ -1924,12 +1924,20 @@ def _attach_info_danmu(info: dict, target: dict | None = None) -> None:
 
 
 def _apply_duration(info: dict, dur: int) -> dict:
-    """把总时长写进 play/info（客户端用 item.duration 夹取续播 ts）。"""
+    """把总时长/续播点写进 play/info。
+
+    网页端自己会把 data.ts 夹到 item.duration 后复制成 item.watched_ts 再交给
+    播放器（``a={...e,ts:i,item:{...r,watched_ts:i}}``），说明**播放器真正拿到的
+    起播位置是 item.watched_ts**；iOS 原生端不经过这层 JS，直接读接口字段，
+    所以这里要一并把 ts 镜像进 item.watched_ts，否则手机 App 永远从头播。
+    """
     dur = int(dur or 0)
+    ts = int(info.get("ts") or 0)
     info["duration"] = dur
     item = info.get("item")
     if isinstance(item, dict):
         item["duration"] = dur
+        item["watched_ts"] = ts
         if dur and not item.get("runtime"):
             item["runtime"] = max(1, int(round(dur / 60.0)))
     return info
@@ -2004,6 +2012,16 @@ async def play_info(request: Request):
     body = json.loads(await request.body() or b"{}")
     guid = body.get("item_guid", "")
     client = _client_of(request)
+    # 临时探针：定位续播失效端（验证后可删）
+    try:
+        _rec_probe = history.get(guid) or {}
+        _log.info("play/info probe guid=%s ua=%s rec_ts=%s ep=%s title=%s chart=%s",
+                  guid, (request.headers.get("user-agent") or "")[:70],
+                  _rec_probe.get("ts"), bool(store.get_episode(guid)),
+                  bool(store.get_title_by_guid(guid)),
+                  chart_cache.is_chart_guid(guid))
+    except Exception:
+        pass
 
 
     def _prewarm_from_info(info: dict):
@@ -2066,6 +2084,7 @@ async def play_info(request: Request):
                 "item": {
                     "guid": guid, "type": typ, "title": meta.get("title", ""),
                     "can_play": 1, "play_error": "",
+                    "watched_ts": int(rec0.get("ts") or 0),
                     "season_number": 0 if typ == "Movie" else 1,
                     "episode_number": 0, "parent_guid": "",
                     "posters": inj._poster(meta.get("cover", "")) if meta.get("cover") else "",
