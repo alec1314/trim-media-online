@@ -31,6 +31,10 @@ HTTP_TIMEOUT = 12.0
 SEARCH_TIMEOUT = 8.0
 SEARCH_TIMEOUT_FAST = 6.0
 SEARCH_CONCURRENCY = 16
+# 聚合搜索软截止：到点先返回已完成源的结果，慢源留给后台/下次。冷启动时
+# 21 个源逐个 DNS/TLS 建连可能超过前端 HTTP 预算，等全部返回会得到空结果。
+SEARCH_SOFT_DEADLINE = 4.2
+SEARCH_SOFT_DEADLINE_FULL = 18.0
 # 单源请求失败后的负缓存窗口：期间搜索直接跳过，避免反复等同一个死源。
 SEARCH_FAIL_TTL = 5 * 60
 _search_neg: dict[str, float] = {}
@@ -363,8 +367,13 @@ async def search_all(keyword: str, sources=None, fast: bool = False
     if not targets:
         return []
     timeout = SEARCH_TIMEOUT_FAST if fast else SEARCH_TIMEOUT
-    # 走中转时降并发：公共中转站对突发并发限流，会把好源误判为失败并进负缓存
-    _conc = 4 if subfetch.proxy_mode() == "relay" else SEARCH_CONCURRENCY
+    # 走中转时适当降并发：公共中转站对突发并发限流。但搜索框是用户可感知的
+    # 主链路，21 个源按 4 并发要 20s+，必然超时；快速搜索仍用高并发，完整
+    # 搜索（榜单绑定/后台）才降档。
+    if subfetch.proxy_mode() == "relay":
+        _conc = 16 if fast else 8
+    else:
+        _conc = SEARCH_CONCURRENCY
     sem = asyncio.Semaphore(_conc)
 
     async def one(client: httpx.AsyncClient, s: dict, key: str):
@@ -380,10 +389,22 @@ async def search_all(keyword: str, sources=None, fast: bool = False
             return titles
 
     async with subfetch.async_api_client() as client:
-        results = await asyncio.gather(
-            *[one(client, s, k) for s, k in targets], return_exceptions=True)
+        tasks = [asyncio.create_task(one(client, s, k)) for s, k in targets]
+        deadline = SEARCH_SOFT_DEADLINE if fast else SEARCH_SOFT_DEADLINE_FULL
+        done, pending = await asyncio.wait(tasks, timeout=deadline)
+        for t in pending:
+            t.cancel()
+        if pending:
+            # 取消后等其收尾，避免客户端提前关闭产生 "Task was destroyed" 噪音
+            await asyncio.gather(*pending, return_exceptions=True)
     titles: list[OnlineTitle] = []
-    for r in results:
+    for t in done:
+        if t.cancelled():
+            continue
+        try:
+            r = t.result()
+        except Exception:
+            continue
         if isinstance(r, list):
             titles.extend(r)
     return titles

@@ -65,7 +65,12 @@ class History:
             return False
         with _LOCK:
             prev = self._rec.get(ig, {})
-            ts = int(float(body.get("ts", 0) or 0))
+            ts = max(0, int(float(body.get("ts", 0) or 0)))
+            prev_ts = int(prev.get("ts", 0) or 0)
+            # 播放器每次进入播放页会先上报 ts=0，不能把已看进度清零；除此之外
+            # 以最后一次上报为准（包括用户向前拖动后的回退），跨端续播才准确。
+            if ts == 0 and prev_ts >= 30 and not body.get("reset"):
+                ts = prev_ts
             duration = int(float(body.get("duration", 0) or 0))
             rec = {
                 "item_guid": ig,
@@ -75,13 +80,10 @@ class History:
                 "subtitle_guid": body.get("subtitle_guid",
                                           prev.get("subtitle_guid", "")),
                 "resolution": body.get("resolution", prev.get("resolution", "")),
-                "ts": max(ts, int(prev.get("ts", 0))),
+                "ts": ts,
                 "duration": duration or int(prev.get("duration", 0)),
                 "updated_at": time.time(),
             }
-            # 只有上报进度回退（重新播放）才允许变小：以更大 ts 为准，除非显式重置
-            if ts < int(prev.get("ts", 0)) and body.get("reset"):
-                rec["ts"] = ts
             self._rec[ig] = rec
             self._dirty = True
             self._flush_locked()

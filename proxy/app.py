@@ -24,6 +24,7 @@ import time
 import urllib.parse
 import zlib
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, Response
@@ -52,6 +53,17 @@ from store import (store, make_guid, media_guid, video_guid, is_online_guid,
 
 UPSTREAM_SOCK = os.environ.get("TMO_UPSTREAM_SOCK",
                                "/var/run/trim_media_upstream.sock")
+
+
+def _read_version() -> str:
+    try:
+        return (Path(__file__).resolve().parent.parent / "VERSION").read_text().strip() \
+            or "0.0.0"
+    except Exception:  # noqa: BLE001
+        return "0.0.0"
+
+
+_VERSION = _read_version()
 # 本服务回环基址：网盘原画/转码播放地址是根相对路径，HLS 探测/改写需经本机
 # HTTP 自调用（nginx 5666 → 本应用），不能直接喂给外站 client。
 SELF_BASE = os.environ.get("FNM_SELF_BASE", "http://127.0.0.1:5666")
@@ -515,6 +527,10 @@ async def _access(request: Request, call_next):
         _log.info("%s %s -> %s", request.method,
                   (p + ("?" + request.url.query if request.url.query else ""))[:120],
                   resp.status_code)
+    # 手机/TV 端若走了未接管的搜索路由，记录方法 + UA 以便定位
+    if "search" in p.lower() and not p.startswith("/v/api/v1/search/list"):
+        _log.info("search-unhandled %s %s ua=%r", request.method, p,
+                  request.headers.get("user-agent", "")[:100])
     return resp
 
 
@@ -852,7 +868,9 @@ async def online_search(keyword: str, client: httpx.AsyncClient,
                 _search_inflight.pop(cache_key, None)
 
         asyncio.create_task(work())
-    return await fut
+    # 用 shield 保护共享 future：某个端（手机/TV 连续输入）超时/断连时，
+    # 不能取消其他并发请求正在等待的同一次聚合搜索。
+    return await asyncio.shield(fut)
 
 
 def _norm_title(t: str) -> str:
@@ -1231,6 +1249,41 @@ async def mediadb_sum(request: Request):
 
 
 
+def _attach_card_progress(rows: list) -> None:
+    """给榜单库/独立库卡片回填播放进度。
+
+    App(Flutter) 播放器的续播 seek 读的是列表卡片上的 ts/duration（继续观看
+    能续播正是如此），play/info 里的 ts 不参与起播定位——卡片 ts 恒 0 会表现
+    为「从热门电影/剧集点进去从头播放」。剧集按 resume_episode 落到该续播的
+    一集，与 play/info 的 TV 分支保持一致。
+    """
+    for row in rows:
+        og = row.get("guid") or ""
+        if not og or not store.get_title_by_guid(og):
+            continue
+        rec = None
+        if inj.is_tv(store.get_title_by_guid(og)):
+            eg = store.tv_episode_guids(og)
+            if eg:
+                t_eg, _ts = history.resume_episode(eg)
+                if t_eg:
+                    rec = history.get(t_eg)
+        if rec is None:
+            rec = history.get(og)
+        if not rec:
+            continue
+        ts = int(rec.get("ts") or 0)
+        dur = int(rec.get("duration") or 0)
+        if dur and ts >= dur * 0.95:
+            row["watched"] = 1
+            ts = 0
+        if ts > 0 or dur > 0:
+            row["ts"] = ts
+            row["duration"] = dur
+            if dur and not row.get("runtime"):
+                row["runtime"] = max(1, int(round(dur / 60.0)))
+
+
 @app.post("/v/api/v1/item/list")
 async def item_list(request: Request):
     raw = await request.body()
@@ -1276,6 +1329,7 @@ async def item_list(request: Request):
             row["video_guid"] = video_guid(b["guid"])
             _apply_marks(row)
             rows.append(row)
+        _attach_card_progress(rows)
         rows = clientmod.normalize_cards(rows, client)
         return JSONResponse({"code": 0, "msg": "", "data": {
             "mdb_name": lib_name, "mdb_category": "Mix", "top_dir": "",
@@ -1305,6 +1359,7 @@ async def item_list(request: Request):
     all_rows = _chart_rows_all(body, cat)
     page_size, start, end = _page_args(body, len(all_rows))
     out_rows = all_rows[start:end]
+    _attach_card_progress(out_rows)
     out_rows = clientmod.normalize_cards(out_rows, client)
     _payload = {"code": 0, "msg": "", "data": {
         "mdb_name": mdb_name,
@@ -1318,12 +1373,61 @@ async def item_list(request: Request):
     return JSONResponse(_payload)
 
 
-@app.get("/v/api/v1/search/list")
-async def search_list(request: Request):
-    local = await forward_upstream(request)
-    q = request.query_params.get("q", "").strip()
+_SEARCH_Q_KEYS = ("q", "keyword", "kw", "wd", "search", "query")
+
+
+def _search_q(request: Request, raw_body: bytes = b"") -> str:
+    """从 query / JSON body 提取搜索词。
+
+    Web 端固定用 ``q``；部分手机 / TV 客户端会改用 ``keyword`` 或 POST body。
+    统一取出后，在线聚合搜索才能对每个端都生效。
+    """
+    for key in _SEARCH_Q_KEYS:
+        v = request.query_params.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    if raw_body:
+        try:
+            body = json.loads(raw_body)
+        except Exception:
+            body = None
+        if isinstance(body, dict):
+            for key in _SEARCH_Q_KEYS:
+                v = body.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+    return ""
+
+
+async def _forward_search_upstream(request: Request, q: str) -> Response:
+    """统一以 GET + q 查询官方本地索引。
+
+    POST 搜索在旧版官方接口上不可用；这里归一为 GET，避免手机/TV 端
+    因为方法不同而直接 405 / 空结果。
+    """
+    params = dict(request.query_params)
+    if q:
+        params["q"] = q
+    client = up_client(request)
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() not in ("connection", "content-length", "host")}
+    headers["Host"] = "localhost"
     try:
-        import json
+        r = await client.get("http://localhost" + request.url.path,
+                             params=params, headers=headers)
+    except Exception as exc:
+        return JSONResponse({"code": -1, "msg": f"upstream {type(exc).__name__}",
+                             "data": None}, status_code=502)
+    return Response(content=r.content, status_code=r.status_code,
+                    headers=_safe_response_headers(r.headers),
+                    media_type=r.headers.get("content-type"))
+
+
+async def _search_list_impl(request: Request):
+    raw = await request.body()
+    q = _search_q(request, raw)
+    local = await _forward_search_upstream(request, q)
+    try:
         data = json.loads(local.body)
     except Exception:
         return local
@@ -1336,7 +1440,7 @@ async def search_list(request: Request):
     if q and _should_online(q):
         try:
             online = await asyncio.wait_for(online_search(q, ext_client(request)),
-                                            timeout=6.0)
+                                            timeout=8.0)
         except asyncio.TimeoutError:
             online = []
         except Exception:
@@ -1348,8 +1452,24 @@ async def search_list(request: Request):
         data["data"] = online + items
     else:
         data["data"] = items + online
+    # 诊断：手机/TV 搜索异常时可从日志看到实际方法、参数与客户端
+    cl = _client_of(request)
+    _log.info("search %s q=%r client=%s ua=%r -> local=%d online=%d",
+              request.method, q, cl.kind,
+              request.headers.get("user-agent", "")[:100],
+              len(items), len(online))
     return JSONResponse(data, status_code=200,
                         headers={"Content-Type": "application/json; charset=utf-8"})
+
+
+@app.get("/v/api/v1/search/list")
+async def search_list(request: Request):
+    return await _search_list_impl(request)
+
+
+@app.post("/v/api/v1/search/list")
+async def search_list_post(request: Request):
+    return await _search_list_impl(request)
 
 
 # ------------------------------------------------------------- 详情 / 播放
@@ -1934,9 +2054,12 @@ async def play_info(request: Request):
             if len(_PENDING_MEDIA_CHART) > 1000:
                 for _k in list(_PENDING_MEDIA_CHART)[:500]:
                     _PENDING_MEDIA_CHART.pop(_k, None)
+            # 有播放历史（绑定前曾以该 guid 看过）时把进度带给骨架，避免从头播
+            rec0 = history.get(guid) or {}
             info = {
                 "grand_guid": "", "guid": guid, "parent_guid": "",
-                "play_config": None, "ts": 0, "type": typ,
+                "play_config": None,
+                "ts": int(rec0.get("ts") or 0), "type": typ,
                 "video_guid": video_guid(guid),
                 "audio_guid": "", "subtitle_guid": "",
                 "media_guid": media_guid(guid),
@@ -2329,6 +2452,57 @@ async def person_list(guid: str, request: Request):
     return JSONResponse({"code": 0, "msg": "", "data": {"total": 0, "list": []}})
 
 
+def _canonical_record_guid(body: dict) -> str:
+    """把各端上报的 item_guid 归一到我们认识的条目 guid。
+
+    Web 端通常直接用 episode/title guid；部分手机/TV 端在播放器里拿到的是
+    media_guid / video_guid，或只回传 play_link。这里统一反查，保证跨端
+    播放进度写入同一条记录，续播才能互通。
+
+    剧集特别处理：TV/盒子常在标题级播放，item_guid 是整部剧 guid，
+    实际集号在 play_link 的 index 参数里；此时落到对应 episode guid，
+    避免整部剧共用一个进度。
+    """
+    ig = str(body.get("item_guid") or "").strip()
+    if ig and store.get_episode(ig):
+        return ig
+    link = str(body.get("play_link") or "")
+    title_guid = ig if (ig and store.get_title_by_guid(ig)) else ""
+    cands = [ig, body.get("media_guid"), body.get("video_guid")]
+    m = re.search(r"/media/online/([0-9a-f]{32})/", link)
+    if m:
+        cands.append(m.group(1))
+    for c in cands:
+        c = str(c or "").strip()
+        if not c:
+            continue
+        if store.get_episode(c):
+            return c
+        target = store.resolve_media_guid(c)
+        if target:
+            if target.get("ep_guid"):
+                return target["ep_guid"]
+            title_guid = title_guid or target.get("online_guid") or ""
+            break
+        if store.get_title_by_guid(c):
+            title_guid = title_guid or c
+            break
+    if title_guid:
+        brief = store.get_title_by_guid(title_guid) or {}
+        try:
+            is_tv = inj.is_tv(brief)
+        except Exception:
+            is_tv = False
+        if is_tv:
+            mi = re.search(r"[?&]index=(\d+)", link)
+            idx = int(mi.group(1)) if mi else 0
+            eg = episode_guid(title_guid, "", idx)
+            if store.get_episode(eg):
+                return eg
+        return title_guid
+    return ""
+
+
 @app.post("/v/api/v1/play/record")
 async def play_record(request: Request):
     import json
@@ -2336,16 +2510,18 @@ async def play_record(request: Request):
         body = json.loads(await request.body() or b"{}")
     except Exception:
         body = {}
-    ig = body.get("item_guid", "")
-    if store.get_title_by_guid(ig) or store.get_episode(ig):
+    ig = _canonical_record_guid(body)
+    if ig:
+        body["item_guid"] = ig
         # 客户端只在能算出时长时才带 duration；缺失时用清单 EXTINF 结果补齐，
         # 否则「继续观看」无法按 duration 夹取 ts。
         if not int(float(body.get("duration") or 0)):
             d = _DURATION_BY_MG.get(body.get("media_guid", ""), 0)
             if d:
                 body["duration"] = d
-        _log.info("play/record %s ts=%s dur=%s keys=%s", ig,
-                  body.get("ts"), body.get("duration"), sorted(body))
+        _log.info("play/record %s ts=%s dur=%s media=%s keys=%s", ig,
+                  body.get("ts"), body.get("duration"),
+                  body.get("media_guid"), sorted(body))
         # 记录在线播放进度到本地（继续观看），不上报官方库
         history.record(body)
         return JSONResponse({"code": 0, "msg": "", "data": True})
@@ -3680,7 +3856,8 @@ async def hls_cors_preflight(rest: str):
 
 # ===== HLS 分片预取（借鉴 LunaTV：边播边预取后续分片，缓冲速度提升 2-4 倍） =====
 # 播放器拉第 N 片时，后台并发预取 N+1/N+2 片入内存缓存（50MB 上限，600s TTL），
-# 播放器随后请求直接命中内存，不再等上游 CDN。Range/seek 请求绕过缓存。
+# 播放器随后请求直接命中内存，不再等上游 CDN。带 Range 的请求也从缓存切片回
+# 206（seek 超出缓存范围才回源），否则客户端每片直连上游、预取形同虚设。
 _SEG_PREFETCH_N = 2
 _SEG_CACHE_TTL = 600.0
 _SEG_CACHE_MAX = 50 * 1024 * 1024
@@ -3724,15 +3901,40 @@ def _register_seg_order(mg: str, refs: list) -> None:
             _SEG_ORDER.pop(k, None)
 
 
+def _slice_cached(body: bytes, headers: dict, range_value: str):
+    """缓存命中时对 Range 请求返回 206 切片。
+
+    客户端（Flutter/ExoPlayer 等）拉分片常带 Range: bytes=0-，此前一律绕过
+    缓存直连上游，预取命中无效，表现为客户端播放卡顿而浏览器（hls.js 不带
+    Range）流畅。seek 超出缓存范围时返回 None 回退上游。"""
+    m = re.match(r"bytes=(\d+)-(\d*)$", (range_value or "").strip())
+    if not m:
+        return None
+    total = len(body)
+    start = int(m.group(1))
+    if start >= total:
+        return None
+    end = min(int(m.group(2)) if m.group(2) else total - 1, total - 1)
+    chunk = body[start:end + 1]
+    h = dict(headers)
+    h["Content-Range"] = f"bytes {start}-{end}/{total}"
+    h["Content-Length"] = str(len(chunk))
+    h["Accept-Ranges"] = "bytes"
+    return chunk, 206, h
+
+
 async def _seg_load(mg: str, params, headers: dict, range_value: str | None,
                     request: Request):
-    """取一个分片：命中预取缓存直接返回；否则抓上游并做 AES 解密 / PNG 剥壳。
-    返回 (body, status, resp_headers)。带 Range 的请求绕过缓存。"""
+    """取一个分片：命中预取缓存直接返回（Range 请求给 206 切片）；
+    否则抓上游并做 AES 解密 / PNG 剥壳。返回 (body, status, resp_headers)。"""
     key = _seg_cache_key(mg, params)
-    if not range_value:
-        hit = _seg_cache_get(key)
-        if hit:
+    hit = _seg_cache_get(key)
+    if hit:
+        if not range_value:
             return hit
+        sliced = _slice_cached(hit[0], hit[2], range_value)
+        if sliced:
+            return sliced
     fwd = dict(headers)
     if params.get("dec") == "1":
         fwd.pop("Range", None)
@@ -3862,11 +4064,15 @@ async def hls_compact(mg: str, request: Request):
     fwd: dict = {}
     range_value = request.headers.get("range")
     ck = (mg, "c:" + src_url, "", "", "")
-    if not range_value:
-        hit = _seg_cache_get(ck)
-        if hit:
+    hit = _seg_cache_get(ck)
+    if hit:
+        if not range_value:
             _schedule_compact_prefetch(mg, request, rid, idx)
             return Response(content=hit[0], status_code=hit[1], headers=hit[2])
+        sliced = _slice_cached(hit[0], hit[2], range_value)
+        if sliced:
+            return Response(content=sliced[0], status_code=sliced[1],
+                            headers=sliced[2])
     # 网盘 CDN 分片必须带登录 Cookie（裸取 412），按域名兜底注入
     if range_value:
         fwd["Range"] = range_value
@@ -4063,6 +4269,8 @@ async def ext_status(request: Request):
     priorities = {s["id"]: providers.source_priority(s, overrides)
                   for s in config.all_sources()}
     return {"ok": True,
+            "version": _VERSION,
+            "takeover": os.path.exists(UPSTREAM_SOCK),
             "config": {k: v for k, v in config.get().items() if k != "admin_token"},
             "source_priority": priorities,
             "cached_titles": len(store._titles),
@@ -4551,8 +4759,9 @@ async def ext_source_test_all(request: Request):
 @app.get("/v/online-admin")
 async def admin_page():
     from admin_ui import ADMIN_HTML
+    html = ADMIN_HTML.replace("__TMO_VERSION__", _VERSION)
     return Response(
-        ADMIN_HTML,
+        html,
         media_type="text/html; charset=utf-8",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate",
                  "Pragma": "no-cache", "Expires": "0"})

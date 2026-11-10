@@ -240,7 +240,8 @@ def make_stream(mg: str, og: str, title: str, year: str = "",
         "codec_name": "ass",
         "codec_type": "subtitle",
         "format": "ass",
-        "index": 0,
+        # 真实字幕轨通常 index 从 0 开始；弹幕用高位，避免与字幕菜单项冲突
+        "index": 99,
         "is_default": 1 if auto else 0,
         "is_external": 1,
         "is_bitmap": 0,
@@ -639,8 +640,21 @@ async def test(api: str, token: str) -> dict:
             return {"ok": False, "ms": ms, "msg": f"HTTP {r.status_code}"}
         data = r.json()
         n = len(data.get("animes") or []) if isinstance(data, dict) else 0
-        return {"ok": True, "ms": ms, "count": n,
-                "msg": f"连接正常（{ms} ms，搜索返回 {n} 条）"}
+        # 额外做一次真实匹配 + 取弹幕，帮助区分「接口通」与「上游没有弹幕」
+        sample_n, sample_note = 0, ""
+        try:
+            m = await _match(base, "间谍过家家 S01E01", timeout=8.0)
+            if not m:
+                sample_note = "；样例「间谍过家家」未匹配到剧集"
+            else:
+                cs = await _comments(base, m["episode_id"], timeout=12.0)
+                sample_n = len(cs)
+                if sample_n == 0:
+                    sample_note = "；样例剧集返回 0 条弹幕（公共实例上游常被限流/失效）"
+        except Exception as exc:  # noqa: BLE001
+            sample_note = f"；弹幕样例获取失败：{type(exc).__name__}"
+        return {"ok": True, "ms": ms, "count": n, "comment_count": sample_n,
+                "msg": f"连接正常（{ms} ms，搜索返回 {n} 条{sample_note}）"}
     except Exception as exc:
         ms = int((time.time() - started) * 1000)
         return {"ok": False, "ms": ms,

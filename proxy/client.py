@@ -128,13 +128,22 @@ def _strict_date(v) -> str:
 def normalize_card(row: dict, client: Client) -> dict:
     """按端规整“媒体库/搜索列表卡片”。
 
-    仅对 TV 严格模型做白名单裁剪 + 枚举/日期规整；其它端原样返回（它们更宽松，
-    额外字段无害，裁剪反而会丢信息）。对单条与列表都安全（不修改入参）。
+    TV 严格模型做白名单裁剪 + 枚举/日期规整；手机端（Flutter/Alamofire）虽然
+    接受额外字段，但日期与 status 仍可能按严格类型解析，故只做软规整（不裁剪）。
+    网页端原样返回。对单条与列表都安全（不修改入参）。
     """
     if not isinstance(row, dict):
         return row
     if not client.strict_card:
-        return row
+        if not client.is_mobile:
+            return row
+        out = dict(row)
+        out["status"] = "1"
+        if "release_date" in out:
+            out["release_date"] = _strict_date(out.get("release_date"))
+        if "air_date" in out:
+            out["air_date"] = _strict_date(out.get("air_date"))
+        return out
     out = {k: row[k] for k in TV_CARD_KEEP if k in row}
     out["status"] = "1"
     # 仅在原卡确实带日期键时才输出（补成完整日期）；缺键给空串而非字符串 "None"，
@@ -157,8 +166,10 @@ def normalize_card(row: dict, client: Client) -> dict:
 
 
 def normalize_cards(rows, client: Client):
-    """批量规整列表卡片；非严格端零拷贝原样返回。"""
-    if not rows or not client.strict_card:
+    """批量规整列表卡片；Web 端零拷贝原样返回。"""
+    if not rows:
+        return rows
+    if not client.strict_card and not client.is_mobile:
         return rows
     return [normalize_card(r, client) for r in rows]
 
@@ -174,9 +185,10 @@ def normalize_detail(obj, client: Client):
     才能进入播放页，故这里【绝不裁剪字段】，只把 TV 严格端会解析失败的形态归一：
       * 4 位年份 -> yyyy-MM-dd；缺键不动（不写 "None"）。
       * 递归处理内嵌的 item / Episode / Season 对象与列表。
-    手机/iOS/Web 原样返回。返回新对象，不修改入参。
+    手机端同样做日期/status 软规整；Web 端原样返回。返回新对象，不修改入参。
     """
-    if not client.strict_card or not isinstance(obj, dict):
+    if (not client.strict_card and not client.is_mobile) \
+            or not isinstance(obj, dict):
         return obj
 
     def _norm(o):
@@ -185,6 +197,8 @@ def normalize_detail(obj, client: Client):
             for k, v in o.items():
                 if k in _DATE_KEYS and isinstance(v, str) and v:
                     x[k] = _strict_date(v)
+                elif k == "status" and v == "在线":
+                    x[k] = "1"
                 else:
                     x[k] = _norm(v)
             return x

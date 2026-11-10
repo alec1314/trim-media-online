@@ -117,12 +117,12 @@ tr:last-child td{border-bottom:0}
   cursor:pointer;white-space:nowrap;padding:2px 8px;border-radius:99px;border:1px solid var(--line);background:#fff}
 .lib .pin input{margin:0;accent-color:var(--accent)}
 .lib:has(.pin input:checked){border-color:var(--accent);background:var(--accent-soft)}
-
-/* ---------- 优先级 ---------- */
-.prio-input{width:74px}
-.prio-bar{height:5px;border-radius:3px;background:linear-gradient(90deg,#cfe0fb,#2f6fed);margin-top:3px}
+.group-title{font-size:13px;font-weight:600;margin:16px 0 8px;display:flex;align-items:center;gap:8px}
+.group-title:first-of-type{margin-top:0}
+.divider{border-top:1px solid var(--line);margin:16px 0}
 
 /* ---------- 弹窗/日志/toast ---------- */
+.prio-input{width:74px}
 pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-radius:8px;
   padding:10px;font-size:11px;line-height:1.5;margin:6px 0 0;white-space:pre-wrap}
 #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(8px);
@@ -171,20 +171,20 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
   <aside class="sidebar">
     <div class="brand">
       <div class="brand-mark">🎬</div>
-      <div><div class="brand-name">trim-media-online</div><div class="brand-sub">管理台</div></div>
+      <div><div class="brand-name">trim-media-online</div><div class="brand-sub">管理台 · v__TMO_VERSION__</div></div>
     </div>
     <nav class="nav" id="nav">
       <button class="nav-item active" data-page="overview">概览</button>
-      <button class="nav-item" data-page="library">虚拟媒体库</button>
-      <button class="nav-item" data-page="quality">片源质量</button>
       <button class="nav-item" data-page="sources">资源站</button>
-      <button class="nav-item" data-page="importsub">订阅同步</button>
       <button class="nav-item" data-page="danmu">弹幕</button>
       <button class="nav-item" data-page="search">搜索</button>
       <button class="nav-item" data-page="about">关于</button>
     </nav>
     <div class="sidebar-foot">
       <span id="globalState" class="dot wait">检测中…</span>
+      <div class="muted" style="margin-top:6px;line-height:1.5">
+        v<span id="globalVer">__TMO_VERSION__</span> · <span id="globalMode">检测中</span>
+      </div>
     </div>
   </aside>
 
@@ -192,43 +192,24 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
 
     <!-- ============ 概览 ============ -->
     <section class="page active" id="page-overview">
-      <h2 class="page-title">概览</h2>
+      <h2 class="page-title">概览 <span class="badge" id="ovVer" style="font-size:11px;vertical-align:middle">v__TMO_VERSION__</span></h2>
       <p class="page-desc">在飞牛原生搜索与媒体库中注入在线影视，点击直接调用飞牛原生播放器。</p>
 
       <div class="card">
-        <div class="card-title">虚拟媒体库</div>
-        <p class="card-sub">① 各类目热门资源：豆瓣真实榜单，点击才搜源播放；② 单源独立库：给某个源单独生成一张按分类深翻的媒体库。</p>
-        <div class="lib-grid" id="ovLibs"><div class="muted sm">加载中…</div></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">本设备识别 <span class="badge" id="ovClientKind">-</span></div>
-        <div class="hint" id="ovClient">读取中…</div>
-        <div class="muted sm" id="ovClientUa" style="word-break:break-all"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">统计</div>
+        <div class="card-title">运行统计</div>
         <div class="stat-grid">
           <div class="stat"><div class="n" id="ovSrcN">-</div><div class="l">启用资源站</div></div>
           <div class="stat"><div class="n" id="ovCacheN">-</div><div class="l">已缓存在线条目</div></div>
           <div class="stat"><div class="n" id="ovHotN">-</div><div class="l">热门榜单条目</div></div>
           <div class="stat"><div class="n" id="ovCatN">-</div><div class="l">单源独立库</div></div>
         </div>
-        <div class="hint" id="ovHotMeta"></div>
       </div>
 
-    </section>
-
-    <!-- ============ 虚拟媒体库 ============ -->
-    <section class="page" id="page-library">
-      <h2 class="page-title">虚拟媒体库</h2>
-      <p class="page-desc">插件在飞牛影视媒体库中虚拟出的内容。榜单四库可开关；单源独立库随源配置生成。每张库卡可单独「置顶」。</p>
-
       <div class="card">
-        <div class="card-title">① 热门资源（各类目真实榜单）</div>
-        <p class="card-sub">海报 / 评分 / 排名来自豆瓣榜单，后台定时刷新、打开秒读缓存；
-          点进某部片时才用片名实时搜索资源站解析播放。点击播放时<strong>优先高质量源</strong>。</p>
+        <div class="card-title">虚拟媒体库</div>
+        <p class="card-sub">榜单四库可开关，单源独立库随源配置生成；每张库卡可单独「置顶」。</p>
+
+        <div class="group-title">① 热门资源 <span class="muted sm" style="font-weight:400">豆瓣真实榜单，点进片子才搜源播放，优先高质量源</span></div>
         <div class="lib-grid" id="hotLibs"></div>
         <label class="switch-row">
           <input type="checkbox" id="hotEnabled"/>
@@ -244,92 +225,25 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
           <button class="primary small" onclick="saveHotCfg()">保存热门设置</button>
           <button class="small" onclick="refreshHot()">立即刷新榜单</button>
         </div>
-      </div>
 
-      <div class="card">
-        <div class="card-title">② 单源独立媒体库</div>
-        <p class="card-sub">在「资源站」页给某个源勾选「独立库」，该源会单独生成一张媒体库卡片：按该源苹果 CMS 分类深翻，与榜单四库互不影响。</p>
+        <div class="divider"></div>
+        <div class="group-title">② 单源独立媒体库</div>
+        <p class="card-sub">在「资源站」页给某个源勾选「独立库」，该源会单独生成一张按分类深翻的媒体库卡片，与榜单四库互不影响。</p>
         <div class="lib-grid" id="catLibs"><div class="muted sm">暂无独立库</div></div>
         <div class="hint">独立库在分类路由建立后自动出现（约 1-2 分钟）；分类路由每 6 小时重建一次。</div>
       </div>
     </section>
 
-    <!-- ============ 片源质量 ============ -->
-    <section class="page" id="page-quality">
-      <h2 class="page-title">片源质量优先级</h2>
-      <p class="page-desc">热门资源点击搜源时，按「源质量权重 → 可播直链数」排序，优先选择高质量源。</p>
-      <div class="card">
-        <label class="switch-row">
-          <input type="checkbox" id="preferQ" checked/>
-          <span>热门资源优先高质量源
-            <span class="sub">关闭后只按可播直链总数选择来源</span></span>
-        </label>
-        <div class="btn-row">
-          <button class="primary small" onclick="savePreferQ()">保存</button>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">各源质量权重 <span class="badge" id="prioCount"></span>
-          <button class="small" style="margin-left:auto" onclick="resetPriority()">恢复默认权重</button>
-        </div>
-        <p class="card-sub">数值越大越优先（-100–100，留空/0 用内省默认）。修改后点底部「保存权重」。</p>
-        <table>
-          <thead><tr><th>资源站</th><th style="width:120px">质量权重</th><th>相对优先级</th></tr></thead>
-          <tbody id="prioRows"><tr><td colspan="3" class="muted">加载中…</td></tr></tbody>
-        </table>
-        <div class="btn-row"><button class="primary small" onclick="savePriority()">保存权重</button></div>
-      </div>
-    </section>
-
-    <!-- ============ 资源站 ============ -->
+    <!-- ============ 资源站（一键拉取 / 代理 / 资源列表） ============ -->
     <section class="page" id="page-sources">
-      <h2 class="page-title">资源站</h2>
-      <p class="page-desc">标准苹果 CMS 源；启用后进入聚合搜索、榜单搜源与单源独立库。</p>
-      <div class="card">
-        <div class="card-title">资源站列表 <span class="badge" id="srcCount"></span>
-          <button class="small" style="margin-left:auto" onclick="testAll()">全部测速</button>
-          <button class="small" onclick="restoreBuiltin()">清空全部源</button>
-        </div>
-        <div style="overflow-x:auto">
-        <table>
-          <thead><tr><th style="width:42px">启用</th><th style="width:96px">选项</th><th>资源站</th>
-            <th style="width:150px">连通性</th><th style="width:70px">测试</th><th style="width:44px"></th></tr></thead>
-          <tbody id="srcRows"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
-        </table>
-        </div>
-        <div class="row mt" style="display:grid;grid-template-columns:150px 1fr 90px auto;gap:10px" id="addGrid">
-          <input type="text" id="addName" placeholder="名称（可选）"/>
-          <input type="text" id="addApi" placeholder="苹果CMS JSON 接口，如 https://xxx.com/api.php/provide/vod/at/json"/>
-          <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
-            <input type="checkbox" id="addStandalone" style="width:15px;height:15px;accent-color:var(--accent)"/>独立库</label>
-          <button class="primary small" style="justify-content:center" onclick="addSource()">添加</button>
-        </div>
-        <div class="hint">「独立库」= 该站单独生成一张媒体库卡片；「非过滤」= 不按标题/备注过滤解说/预告/花絮。
-          本项目不内置任何源：请在上方添加你自行获取的苹果 CMS V10 JSON 接口，或到「订阅同步」页从 LunaTV 配置定时拉取。请仅接入你有权访问的接口。</div>
-      </div>
+      <h2 class="page-title">资源站与订阅</h2>
+      <p class="page-desc">从订阅一键拉取源、按需配置代理，资源列表统一启停、测速、看健康画像与调权。</p>
 
       <div class="card">
-        <div class="card-title">源健康画像
-          <span class="hint" style="font-weight:400">按真实播放探测统计成功率/延迟，死源自动降权 15 分钟</span>
-          <button class="small" style="margin-left:auto" onclick="loadHealth()">刷新</button>
-        </div>
-        <table>
-          <thead><tr><th>源</th><th style="width:80px">样本</th>
-            <th style="width:110px">成功率</th><th style="width:100px">平均延迟</th>
-            <th style="width:90px">状态</th><th style="width:70px">操作</th></tr></thead>
-          <tbody id="healthRows"><tr><td colspan="6" class="muted">播放几次后自动生成。</td></tr></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- ============ 订阅同步（LunaTV 定时拉源+测速） ============ -->
-    <section class="page" id="page-importsub">
-      <h2 class="page-title">订阅同步</h2>
-      <p class="page-desc">从 <code>hafrey1/LunaTV-config</code> 定时拉取苹果 CMS 源清单：自动去重、逐个测速、可用源自动入库；连续两轮失败的源自动禁用（可在资源站页恢复）。也可填写任意 LunaTV / MoonTV 配置地址（JSON / Base58 / Base64）。请仅接入你有权访问的接口。</p>
-
-      <div class="card">
-        <div class="card-title">LunaTV 定时同步 <span class="badge" id="lunaBadge">未同步</span>
+        <div class="card-title">一键拉取 · LunaTV 定时同步 <span class="badge" id="lunaBadge">未同步</span>
           <button class="small" style="margin-left:auto" onclick="loadLunaStatus()">刷新状态</button></div>
+        <p class="card-sub">从 <code>hafrey1/LunaTV-config</code> 定时拉取源清单：自动去重、逐个测速、可用源自动入库到下方资源列表；
+          连续两轮失败的源自动禁用（可在列表恢复）。也可填任意 LunaTV / MoonTV 配置地址（JSON / Base58 / Base64）。</p>
         <div class="row" style="display:grid;grid-template-columns:190px 1fr;gap:10px;align-items:center">
           <select id="lunaPreset" onchange="saveLunaCfg()">
             <option value="jin18">精简版（推荐）</option>
@@ -352,17 +266,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
       </div>
 
       <div class="card">
-        <div class="card-title">测速结果
-          <span class="hint" style="font-weight:400">按延迟排序；延迟为苹果CMS接口响应时间</span></div>
-        <table>
-          <thead><tr><th>源</th><th style="width:90px">状态</th><th style="width:90px">延迟</th>
-            <th style="width:90px">结果数</th><th style="width:80px">连续失败</th></tr></thead>
-          <tbody id="lunaRows"><tr><td colspan="5" class="muted">尚未测速。</td></tr></tbody>
-        </table>
-      </div>
-
-      <div class="card">
-        <div class="card-title">订阅 / API 中转代理（可选）
+        <div class="card-title">代理（可选）
           <label style="float:right;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:400;cursor:pointer">
             <input type="checkbox" id="subProxyEnable" style="width:14px;height:14px;accent-color:var(--accent)" onchange="onSubProxyToggle()"/> 启用代理</label></div>
         <p class="card-sub">用于<strong>拉取 LunaTV 配置</strong>与<strong>源 API 请求</strong>（测速/搜索/分类）；<strong>媒体播放仍直连</strong>。支持两种格式：
@@ -380,6 +284,36 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
         </div>
         <div class="hint" id="subProxyHint">中转示例：<code>https://ac9.cc.cd/</code>；HTTP 代理示例：<code>http://Clash:密码@192.168.x.x:7890</code></div>
         <div id="subProxyMsg" class="muted sm" style="margin-top:6px"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">资源列表 <span class="badge" id="srcCount"></span>
+          <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:400;cursor:pointer">
+            <input type="checkbox" id="preferQ" style="width:14px;height:14px;accent-color:var(--accent)" onchange="savePreferQ()"/>热门优先高质量源</label>
+          <button class="small" style="margin-left:auto" onclick="testAll()">全部测速</button>
+          <button class="small" onclick="savePriority()">保存权重</button>
+          <button class="small" onclick="resetPriority()">默认权重</button>
+          <button class="small" onclick="restoreBuiltin()">清空全部源</button>
+        </div>
+        <p class="card-sub">成功率 / 延迟 / 状态来自真实播放探测的源健康画像（死源自动降权 15 分钟）；权重影响热门搜源排序，-100–100，留空用默认。修改权重后点「保存权重」。</p>
+        <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th style="width:42px">启用</th><th style="width:96px">选项</th><th>资源站</th>
+            <th style="width:150px">连通性</th><th style="width:60px">测试</th>
+            <th style="width:62px">成功率</th><th style="width:62px">延迟</th>
+            <th style="width:74px">状态</th><th style="width:90px">权重</th><th style="width:36px"></th></tr></thead>
+          <tbody id="srcRows"><tr><td colspan="10" class="muted">加载中…</td></tr></tbody>
+        </table>
+        </div>
+        <div class="row mt" style="display:grid;grid-template-columns:150px 1fr 90px auto;gap:10px" id="addGrid">
+          <input type="text" id="addName" placeholder="名称（可选）"/>
+          <input type="text" id="addApi" placeholder="苹果CMS JSON 接口，如 https://xxx.com/api.php/provide/vod/at/json"/>
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
+            <input type="checkbox" id="addStandalone" style="width:15px;height:15px;accent-color:var(--accent)"/>独立库</label>
+          <button class="primary small" style="justify-content:center" onclick="addSource()">添加</button>
+        </div>
+        <div class="hint">「独立库」= 该站单独生成一张媒体库卡片；「非过滤」= 不按标题/备注过滤解说/预告/花絮。
+          本项目不内置任何源：请在上方粘贴你自行获取的苹果 CMS V10 JSON 接口，或用本页顶部「一键拉取」从 LunaTV 配置定时拉取。请仅接入你有权访问的接口。</div>
       </div>
     </section>
 
@@ -484,10 +418,6 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
       <div class="card">
         <div class="card-title">🎬 trim-media-online · 飞牛影视在线能力扩展</div>
         <p class="card-sub">在原生搜索 / 媒体库注入在线影视并直接调用飞牛原生播放器播放。</p>
-        <div class="stack sm muted">
-          <div>· 热门资源：豆瓣真实榜单四库，点击搜源、优先高质量源播放。</div>
-          <div>· 订阅同步：定时从 LunaTV 配置拉取源、逐个测速并自动清理死源。</div>
-        </div>
         <div class="hint" id="aboutEdition"></div>
       </div>
 
@@ -508,10 +438,10 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
 
 <nav class="bottom-nav" id="bottomNav">
   <button class="nav-item active" data-page="overview">概览</button>
-  <button class="nav-item" data-page="library">媒体库</button>
-  <button class="nav-item" data-page="quality">质量</button>
   <button class="nav-item" data-page="sources">资源站</button>
+  <button class="nav-item" data-page="danmu">弹幕</button>
   <button class="nav-item" data-page="search">搜索</button>
+  <button class="nav-item" data-page="about">关于</button>
 </nav>
 
 <div id="toast"></div>
@@ -522,11 +452,15 @@ const $$=(sel)=>Array.from(document.querySelectorAll(sel));
 let CFG=null,KWS=[],STATUS=null,PRIO={};
 const FEAT_DDUO=false,FEAT_ADULT=false;
 
+const APP_PREFIX="/app/trim-media-online";
+const API_BASE=location.pathname.startsWith(APP_PREFIX)?APP_PREFIX:"";
+const apiUrl=(p)=>API_BASE+p;
+
 function toast(m,kind){const t=$("toast");t.textContent=m;t.className="show "+(kind==="fail"?"fail":"ok");
   clearTimeout(window._tt);window._tt=setTimeout(()=>t.className="",2200);}
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
-async function jget(p){const r=await fetch(p);if(!r.ok)throw new Error(p+" "+r.status);return r.json();}
-async function jpost(p,b){const r=await fetch(p,{method:"POST",headers:{"Content-Type":"application/json"},
+async function jget(p){const r=await fetch(apiUrl(p));if(!r.ok)throw new Error(p+" "+r.status);return r.json();}
+async function jpost(p,b){const r=await fetch(apiUrl(p),{method:"POST",headers:{"Content-Type":"application/json"},
   body:JSON.stringify(b||{})});return r.json();}
 
 /* ---------- 页面切换 ---------- */
@@ -534,56 +468,25 @@ async function switchPage(page){
   $$(".page").forEach(el=>el.classList.toggle("active",el.id==="page-"+page));
   $$("[data-page]").forEach(el=>el.classList.toggle("active",el.dataset.page===page));
   window.scrollTo(0,0);
-  if(page==="overview"){renderOverview();}
-  if(page==="library"){loadLibs().then(renderLibrary);}
-  if(page==="quality")renderQuality();
-  if(page==="sources"){try{loadHealth();}catch(e){}try{loadLunaStatus();}catch(e){}}
-  if(page==="importsub"){try{if(!CFG)await loadStatus();}catch(e){}try{if(typeof initSubProxy==="function")initSubProxy();}catch(e){}try{loadLunaStatus();}catch(e){}}
+  if(page==="overview"){try{renderOverview();}catch(e){console.error(e);}loadLibs().then(renderLibrary).catch(e=>console.error(e));}
+  if(page==="sources"){
+    try{renderSources();}catch(e){}
+    try{loadLunaStatus();}catch(e){}
+    try{if(typeof initSubProxy==="function")initSubProxy();}catch(e){}
+  }
   if(page==="danmu"){try{if(!CFG)await loadStatus();}catch(e){}initDanmu();}
   if(page==="about"){}
 }
 $$("[data-page]").forEach(b=>b.addEventListener("click",()=>switchPage(b.dataset.page)));
 
 /* ---------- 概览 ---------- */
-/* ---------- 本设备识别（自检） ---------- */
-async function loadWhoami(){
-  try{
-    const r=await jget("/v/api/ext/whoami");const d=r.data||{};
-    const kindMap={tv:"TV / 电视盒子（严格模型）",android:"Android 手机/平板",
-      ios:"iPhone / iPad",web:"网页版",unknown:"未识别（按宽松处理）"};
-    $("ovClientKind").textContent=d.label||"-";
-    $("ovClient").textContent=(kindMap[d.kind]||d.kind)
-      +(d.strict_card?" · 已启用严格字段规整":" · 宽松字段")
-      +(d.is_mobile?" · 移动端":"");
-    $("ovClientUa").textContent=d.ua||"";
-  }catch(e){$("ovClient").textContent="识别失败："+e;}
-}
-
-/* ---------- 通用小工具 ---------- */
-function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
-
 function renderOverview(){
-  if(!STATUS)return;
+  if(!STATUS||!CFG)return;
   const c=STATUS.charts&&STATUS.charts.counts||{};
-  const hotN=(c.movie||0)+(c.tv||0)+(c.anime||0)+(c.variety||0);
   $("ovSrcN").textContent=CFG.sources.filter(s=>s.enabled).length;
   $("ovCacheN").textContent=STATUS.cached_titles||0;
-  $("ovHotN").textContent=hotN;
-  $("ovCatN").textContent=((CFG&&CFG.sources)||[]).filter(x=>x.standalone).length;
-  $("ovHotMeta").textContent=(STATUS.charts&&STATUS.charts.refreshing?"正在刷新…":"最近刷新："+fmtTs(STATUS.charts&&STATUS.charts.updated_at))
-    +` · 电影${c.movie||0}/剧${c.tv||0}/动漫${c.anime||0}/综艺${c.variety||0}`
-    +(STATUS.charts&&STATUS.charts.last_error?(" · "+STATUS.charts.last_error):"");
-  $("ovLibs").innerHTML=libCards(c,cats);
-}
-function libCards(chartCounts,cats){
-  const hot=[["🎬","热门电影",chartCounts.movie||0],["📺","热门剧集",chartCounts.tv||0],
-    ["🌸","动漫新番",chartCounts.anime||0],["🎤","热门综艺",chartCounts.variety||0]];
-  const catMap={movie:"在线电影",tv:"在线剧集",anime:"在线动漫",variety:"在线综艺"};
-  const cat=[["🌐",catMap.movie,(cats.movie||{}).routes||0],["🌐",catMap.tv,(cats.tv||{}).routes||0],
-    ["🌐",catMap.anime,(cats.anime||{}).routes||0],["🌐",catMap.variety,(cats.variety||{}).routes||0]];
-  const item=(arr,label)=>arr.map(([ic,t,n])=>
-    `<div class="lib"><div class="ic">${ic}</div><div><div class="t">${t}</div><div class="c">${label} ${n}</div></div></div>`).join("");
-  return item(hot,"榜单")+item(cat,"路由");
+  $("ovHotN").textContent=(c.movie||0)+(c.tv||0)+(c.anime||0)+(c.variety||0);
+  $("ovCatN").textContent=(CFG.sources||[]).filter(x=>x.standalone).length;
 }
 
 /* ---------- 虚拟媒体库 ---------- */
@@ -654,66 +557,37 @@ async function refreshHot(){
   toast(r.code===0?"榜单已刷新":(r.msg||"刷新失败"),r.code===0?"ok":"fail");
 }
 
-/* ---------- 片源质量 ---------- */
-function renderQuality(){
-  if(!STATUS)return;
-  $("preferQ").checked=CFG.prefer_quality_source!==false;
-  PRIO=STATUS.source_priority||{};
-  const ov=CFG.source_priority||{};
-  $("prioCount").textContent=Object.keys(ov).length+" 自定义";
-  const rows=CFG.sources.map(s=>{
-    const eff=PRIO[s.id]||0, custom=ov[s.id];
-    const w=Math.max(4,Math.min(100,(eff+20)));
-    return `<tr data-id="${s.id}">
-      <td><div style="font-weight:500">${esc(s.name)} ${s.enabled?'':'<span class="muted sm">(停用)</span>'}</div>
-        <div class="meta">${esc(s.api)}</div></td>
-      <td><input type="number" class="prio-input" min="-100" max="100" data-prio
-        value="${custom!=null?custom:''}" placeholder="${eff}"/></td>
-      <td style="min-width:120px"><div class="prio-bar" style="width:${w}%"></div>
-        <span class="muted sm">${custom!=null?('自定义 '+custom):'默认 '+eff}</span></td></tr>`;
-  }).join("");
-  $("prioRows").innerHTML=rows||'<tr><td colspan="3" class="muted">暂无源</td></tr>';
-}
-function collectPriority(){const m={};$$("[data-prio]").forEach(inp=>{
-  const v=inp.value.trim();if(v!=="")m[inp.closest("tr").dataset.id]=parseInt(v)||0;});return m;}
-async function savePriority(){
-  const r=await jpost("/v/api/ext/source/priority",{priority:collectPriority()});
-  if(r.code===0){toast("权重已保存");await loadStatus();renderQuality();}else toast(r.msg||"保存失败","fail");
-}
-async function resetPriority(){
-  const r=await jpost("/v/api/ext/source/priority",{priority:{}});
-  if(r.code===0){toast("已恢复默认权重");await loadStatus();renderQuality();}else toast("失败","fail");
-}
-async function savePreferQ(){
-  const r=await jpost("/v/api/ext/config",{prefer_quality_source:$("preferQ").checked});
-  if(r.code===0){CFG.prefer_quality_source=$("preferQ").checked;toast("已保存");}else toast("失败","fail");
-}
-
 /* ---------- 资源站 ---------- */
 function renderSources(){
   const srcs=CFG.sources;
   $("srcCount").textContent=srcs.filter(x=>x.enabled).length+"/"+srcs.length+" 启用";
+  $("preferQ").checked=CFG.prefer_quality_source!==false;
   if(!srcs.length){
-    $("srcRows").innerHTML='<tr><td colspan="6" class="muted">尚未添加任何资源站——请先在下方粘贴苹果 CMS V10 JSON 接口并点「添加」。未配置源时，在线搜索与热门榜单均无内容。</td></tr>';
+    $("srcRows").innerHTML='<tr><td colspan="10" class="muted">尚未添加任何资源站——请用顶部「一键拉取」或下方粘贴苹果 CMS V10 JSON 接口添加。未配置源时，在线搜索与热门榜单均无内容。</td></tr>';
     return;
   }
+  const pr=STATUS.source_priority||{}, ov=CFG.source_priority||{};
   $("srcRows").innerHTML=srcs.map(src=>{
-    let extraCell="",extraTag="";
+    const eff=pr[src.id]||0, custom=ov[src.id];
     return `<tr data-id="${src.id}">
       <td><input type="checkbox" class="en" ${src.enabled?"checked":""} style="accent-color:var(--accent);width:16px;height:16px"/></td>
-      <td style="white:nowrap">
+      <td style="white-space:nowrap">
         <label title="把该资源站单独生成一张媒体库卡片" style="display:inline-flex;align-items:center;gap:2px;font-size:11px;cursor:pointer">
           <input type="checkbox" class="sa" ${src.standalone?"checked":""}
            ${(src.enabled&&!(FEAT_DDUO&&src.xsrc))?"":"disabled"} style="width:15px;height:15px;accent-color:var(--accent)"/>库</label>
         <label title="非过滤：独立库内不按标题/备注过滤解说/预告/花絮" style="display:inline-flex;align-items:center;gap:2px;font-size:11px;cursor:pointer;margin-left:4px">
           <input type="checkbox" class="lf" ${src.loose_filter?"checked":""}
            ${(src.enabled&&src.standalone&&!(FEAT_DDUO&&src.xsrc))?"":"disabled"} style="width:15px;height:15px;accent-color:var(--warn)"/>非过滤</label>
-        ${extraCell}
       </td>
-      <td><div style="font-weight:500">${esc(src.name)}${extraTag}${src.builtin?'':'<span class="tag amber">自定义</span>'}${src.standalone?'<span class="tag">媒体库</span>':''}</div>
+      <td><div style="font-weight:500">${esc(src.name)}${src.builtin?'':'<span class="tag amber">自定义</span>'}${src.standalone?'<span class="tag">媒体库</span>':''}</div>
         <div class="meta">${esc(src.api)}</div></td>
       <td class="st wait" data-st>未测</td>
       <td><button class="small" data-test>测试</button></td>
+      <td class="sm muted" data-hr="rate">—</td>
+      <td class="sm muted" data-hr="lat">—</td>
+      <td class="sm" data-hr="grade">—</td>
+      <td><input type="number" class="prio-input" min="-100" max="100" data-prio
+        value="${custom!=null?custom:''}" placeholder="${eff}"/></td>
       <td><button class="del" data-del title="删除">✕</button></td>
     </tr>`;
   }).join("");
@@ -725,6 +599,21 @@ function renderSources(){
     tr.querySelector("[data-test]").addEventListener("click",()=>testOne(id,tr));
     tr.querySelector("[data-del]").addEventListener("click",()=>delSource(id,srcName(id)));
   });
+  loadHealth();
+}
+function collectPriority(){const m={};$$("[data-prio]").forEach(inp=>{
+  const v=inp.value.trim();if(v!=="")m[inp.closest("tr").dataset.id]=parseInt(v)||0;});return m;}
+async function savePriority(){
+  const r=await jpost("/v/api/ext/source/priority",{priority:collectPriority()});
+  if(r.code===0){toast("权重已保存");await loadStatus();renderSources();}else toast(r.msg||"保存失败","fail");
+}
+async function resetPriority(){
+  const r=await jpost("/v/api/ext/source/priority",{priority:{}});
+  if(r.code===0){toast("已恢复默认权重");await loadStatus();renderSources();}else toast("失败","fail");
+}
+async function savePreferQ(){
+  const r=await jpost("/v/api/ext/config",{prefer_quality_source:$("preferQ").checked});
+  if(r.code===0){CFG.prefer_quality_source=$("preferQ").checked;toast("已保存");}else toast("失败","fail");
 }
 function srcName(id){const s=CFG.sources.find(x=>x.id===id);return s?s.name:id;}
 async function toggleEnable(id,on){
@@ -764,26 +653,23 @@ async function testAll(){
   toast("测速完成");
 }
 async function loadHealth(){
-  const box=$("healthRows");if(!box)return;box.innerHTML='<tr><td colspan="6" class="muted">加载中…</td></tr>';
+  // 源健康画像按 key=源 id 填进资源列表的成功率/延迟/状态列
+  let map={};
   try{
-    const r=await (await fetch("/v/api/ext/source-health")).json();
-    const rows=(r.data&&r.data.sources)||[];
-    if(!rows.length){box.innerHTML='<tr><td colspan="6" class="muted">还没有数据，正常播放几次后会自动统计。</td></tr>';return;}
-    const G=["健康","慢","高失败率","冷却中"];
-    const GC=["ok","wait","bad","bad"];
-    box.innerHTML=rows.map(s=>{
-      const pct=Math.round((s.success_rate||0)*100);
-      const nm=s.name?esc(s.name):(s.exists===false?"已移除源":"未命名源");
-      const sub=s.host?esc(s.host):esc(s.key);
-      return `<tr><td><div>${nm}</div><div class="muted sm">${sub}</div></td><td>${s.samples}</td>
-        <td>${pct}%</td><td>${(s.avg_latency||0).toFixed(1)}s</td>
-        <td class="st ${GC[s.grade]||''}">${G[s.grade]||""}</td>
-        <td><button class="small" onclick="resetHealth('${esc(s.key)}')">清零</button></td></tr>`;
-    }).join("");
-  }catch(e){box.innerHTML='<tr><td colspan="6" class="muted">读取失败</td></tr>';}
-}
-async function resetHealth(key){
-  await jpost("/v/api/ext/source-health/reset",{key});loadHealth();
+    const r=await (await fetch(apiUrl("/v/api/ext/source-health"))).json();
+    ((r.data&&r.data.sources)||[]).forEach(s=>{map[s.key]=s;});
+  }catch(e){return;}
+  const G=["健康","慢","高失败率","冷却中"],GC=["ok","wait","bad","bad"];
+  $$("#srcRows tr[data-id]").forEach(tr=>{
+    const s=map[tr.dataset.id];if(!s)return;
+    const rate=tr.querySelector('[data-hr="rate"]'),lat=tr.querySelector('[data-hr="lat"]'),
+          gr=tr.querySelector('[data-hr="grade"]');
+    if(!rate)return;
+    rate.textContent=Math.round((s.success_rate||0)*100)+"%";
+    lat.textContent=s.samples?((s.avg_latency||0).toFixed(1)+"s"):"—";
+    gr.textContent=G[s.grade]||"";
+    gr.className="st "+(GC[s.grade]||"");
+  });
 }
 async function addSource(){
   const name=$("addName").value.trim(),api=$("addApi").value.trim(),standalone=$("addStandalone").checked;
@@ -803,24 +689,6 @@ function lunaReportText(d){
   if(d.auto_skipped)s+="；本轮整体失败过多，已跳过自动禁用";
   return s;
 }
-function renderLunaRows(stats){
-  const box=$("lunaRows");if(!box)return;
-  const srcs=(CFG&&CFG.sources)||[];
-  const rows=srcs.map(s=>({s,st:(stats||{})[s.id]||null}));
-  if(!rows.some(r=>r.st)){box.innerHTML='<tr><td colspan="5" class="muted">尚未测速。点「立即同步」。</td></tr>';return;}
-  rows.sort((a,b)=>{
-    const ao=a.st?(a.st.ok?0:2):1,bo=b.st?(b.st.ok?0:2):1;
-    if(ao!==bo)return ao-bo;
-    return ((a.st&&a.st.ms)||9e9)-((b.st&&b.st.ms)||9e9);
-  });
-  box.innerHTML=rows.map(({s,st})=>{
-    const cls=st?(st.ok?"ok":"bad"):"wait";
-    const badge=st?(st.ok?"正常":(st.fails>=2?"连续失败":"失败")):"未测";
-    const tags=(s.auto_disabled?' <span class="tag warn">自动禁用</span>':"")+(s.enabled?"":(s.auto_disabled?"":' <span class="tag">已停用</span>'));
-    return `<tr><td>${esc(s.name)}${tags}</td><td class="st ${cls}">${badge}</td>
-      <td>${st&&st.ms?st.ms+"ms":"—"}</td><td>${st?st.count:"—"}</td><td>${st?st.fails:"—"}</td></tr>`;
-  }).join("");
-}
 async function loadLunaStatus(){
   try{
     const r=await jget("/v/api/ext/lunatv/status");
@@ -834,7 +702,6 @@ async function loadLunaStatus(){
     if($("lunaBadge"))$("lunaBadge").textContent=last.at?("上次 "+last.at.slice(5,16)):"未同步";
     if($("lunaMsg"))$("lunaMsg").textContent=last.at?lunaReportText(last):"尚未同步。点「立即同步」拉取配置并测速。";
     if($("lunaReport"))$("lunaReport").textContent=last.at?("触发："+(last.trigger==="schedule"?"定时":"手动")+" · 配置："+(last.url||last.preset||"")+" · 同步中："+(d.syncing?"是":"否")):"";
-    renderLunaRows(d.stats||{});
   }catch(e){}
 }
 async function saveLunaCfg(){
@@ -1026,25 +893,35 @@ async function loadStatus(){
 }
 async function init(){
   await loadStatus();
-  KWS=Array.isArray(CFG.junk_keywords)?CFG.junk_keywords.slice():[];
-  $("maxn").value=CFG.max_per_keyword;
-  $("junk").checked=CFG.filter_junk;
-  $("onlineFirst").checked=CFG.online_first!==false;
-  $("lineFastest").checked=CFG.line_fastest!==false;
-  $("lineAutofail").checked=CFG.line_autofail!==false;
-  $("fastestMax").value=CFG.line_fastest_max||6;
-  $("fastestTimeout").value=CFG.line_fastest_timeout||4;
-  renderKw();renderSources();initDanmu();
-  try{loadLunaStatus();}catch(e){}
-  const gs=$("globalState");gs.textContent="接管运行中 · 已缓存 "+STATUS.cached_titles;gs.className="dot ok";
-  const ed=$("aboutEdition");if(ed)ed.textContent=(FEAT_DDUO?"完整版（本地全功能）":"公开版")+" · 在飞牛原生搜索与媒体库中注入在线影视";
-  loadOnline();
-  renderOverview();
-  loadWhoami();
+  // 状态先落定：后续任何渲染异常都不应把「接口正常」误报成「未接管」
+  const ver=STATUS.version||"__TMO_VERSION__";
+  const gs=$("globalState"),gv=$("globalVer"),gm=$("globalMode");
+  if(gv)gv.textContent=ver;
+  const ovv=$("ovVer");if(ovv)ovv.textContent="v"+ver;
+  if(gs){gs.textContent="服务正常 · 已缓存 "+(STATUS.cached_titles||0);gs.className="dot ok";}
+  if(gm)gm.textContent=STATUS.takeover?"影视接口已接管":"接口直连（未接管）";
+  const ed=$("aboutEdition");if(ed)ed.textContent="v"+ver+" · "+(FEAT_DDUO?"完整版（本地全功能）":"公开版")+" · 在飞牛原生搜索与媒体库中注入在线影视";
+  try{
+    KWS=Array.isArray(CFG.junk_keywords)?CFG.junk_keywords.slice():[];
+    $("maxn").value=CFG.max_per_keyword;
+    $("junk").checked=CFG.filter_junk;
+    $("onlineFirst").checked=CFG.online_first!==false;
+    $("lineFastest").checked=CFG.line_fastest!==false;
+    $("lineAutofail").checked=CFG.line_autofail!==false;
+    $("fastestMax").value=CFG.line_fastest_max||6;
+    $("fastestTimeout").value=CFG.line_fastest_timeout||4;
+    renderKw();renderSources();initDanmu();
+    try{loadLunaStatus();}catch(e){}
+    loadOnline();
+    renderOverview();
+    loadLibs().then(renderLibrary).catch(e=>console.error(e));
+  }catch(e){console.error(e);}
 }
 $("kwAdd").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();addKw();}});
 $("kw").addEventListener("input",()=>{clearTimeout(window._t);window._t=setTimeout(loadOnline,250);});
-init().catch(e=>{const gs=$("globalState");gs.textContent="未接管/接口不可用";gs.className="dot bad";console.error(e);});
+init().catch(e=>{const gs=$("globalState"),gm=$("globalMode");
+  if(gs){gs.textContent="管理接口未连接";gs.className="dot bad";}
+  if(gm)gm.textContent="请从应用中心打开";console.error(e);});
 </script>
 </body>
 </html>

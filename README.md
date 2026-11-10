@@ -20,11 +20,11 @@
 https://站点地址/api.php/provide/vod/at/json
 ```
 
-返回 `{"code":1,"list":[{vod_name, vod_play_url, ...}]}` 即被识别。添加后可用「测试 / 全部测速」验证连通性（耗时、命中条数、直链数），也可在「订阅同步」页从 LunaTV 配置定时拉取。请只接入你有权访问的接口。
+返回 `{"code":1,"list":[{vod_name, vod_play_url, ...}]}` 即被识别。添加后可用「测试 / 全部测速」验证连通性（耗时、命中条数、直链数），也可在「资源站」页下方「订阅同步」从 LunaTV 配置定时拉取。请只接入你有权访问的接口。
 
 ### 订阅同步：LunaTV 定时拉源 + 测速（可选）
 
-「订阅同步」页提供 **LunaTV 定时同步**：从公开的
+「资源站」页下方的「订阅同步」提供 **LunaTV 定时同步**：从公开的
 [`hafrey1/LunaTV-config`](https://github.com/hafrey1/LunaTV-config) 拉取现成的苹果 CMS
 源清单，自动去重、逐个测速、可用源自动入库。
 
@@ -38,7 +38,7 @@ https://站点地址/api.php/provide/vod/at/json
 - **定时同步**：开启后按设定间隔（默认 12 小时）自动拉取并测速；点「立即同步」可随时手动执行，手动选择的预设/地址会保存为定时任务配置。
 - **测速**：每源请求一次苹果 CMS `ac=detail`，记录延迟、结果数与连续失败次数，按延迟排序展示；新源只有测速通过才入库。
 - **死源自动禁用**：连续两轮测速失败的源自动停用（管理台可见、可随时恢复）；整轮大面积失败（如断网）时自动跳过禁用，避免误伤。
-- 抓取走「订阅同步」页配置的**订阅 / API 中转代理**：支持 HTTP 正向代理（`http://user:pass@host:port`）和 CORSAPI 式 URL 前缀中转（如 `https://ac9.cc.cd/`，自动拼 `?url=原地址`）。中转作用于配置拉取与源 API（测速/搜索/分类），**媒体播放仍直连**；未配置时 GitHub 直连失败会自动尝试国内镜像。
+- 抓取走「资源站」页下方「订阅同步」配置的**订阅 / API 中转代理**：支持 HTTP 正向代理（`http://user:pass@host:port`）和 CORSAPI 式 URL 前缀中转（如 `https://ac9.cc.cd/`，自动拼 `?url=原地址`）。中转作用于配置拉取与源 API（测速/搜索/分类），**媒体播放仍直连**；未配置时 GitHub 直连失败会自动尝试国内镜像。
 - 该功能只同步第三方清单，**源的可用性与合法性由使用者自行核实**。
 
 未配置源时：在线搜索与热门榜单均无内容；本地媒体库不受任何影响。
@@ -171,7 +171,7 @@ proxy/
   lunatv.py         LunaTV / MoonTV 配置拉取与解析（JSON / Base58 / Base64）
   sourcehealth.py   源健康画像（成功率/延迟/死亡冷却，搜索与播放共用）
   adfilter.py       选集引流广告过滤（只做名称判断）
-  admin_ui.py       单文件管理页（源管理 / 测速 / 订阅同步 / 设置）
+  admin_ui.py       单文件管理页（概览 / 资源站与订阅 / 弹幕 / 搜索 / 关于）
 deploy/             持久 systemd 单元 + install/uninstall
 packaging/fpk/      飞牛应用中心 FPK 打包
 wheelhouse/         离线依赖 wheels（弱网安装用）
