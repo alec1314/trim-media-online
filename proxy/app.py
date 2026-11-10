@@ -2546,9 +2546,6 @@ async def play_record(request: Request):
             d = _DURATION_BY_MG.get(body.get("media_guid", ""), 0)
             if d:
                 body["duration"] = d
-        _log.info("play/record %s ts=%s dur=%s media=%s keys=%s", ig,
-                  body.get("ts"), body.get("duration"),
-                  body.get("media_guid"), sorted(body))
         # 记录在线播放进度到本地（继续观看），不上报官方库
         history.record(body)
         return JSONResponse({"code": 0, "msg": "", "data": True})
