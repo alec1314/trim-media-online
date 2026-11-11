@@ -177,6 +177,21 @@ def main():
     env = os.environ.copy()
     env["TMO_UPSTREAM_SOCK"] = str(UPSTREAM)
     env["PYTHONUNBUFFERED"] = "1"
+    
+    # 启动前配置验证
+    try:
+        from config import config
+        valid, msg = config.validate()
+        if not valid:
+            log(f"配置验证失败: {msg}")
+            rollback()
+            return 1
+        log(f"配置验证通过: {msg}")
+    except Exception as e:
+        log(f"配置验证异常: {e}")
+        rollback()
+        return 1
+    
     child = subprocess.Popen(
         [str(PY), "-m", "uvicorn", "app:app", "--app-dir", str(PROXY),
          "--uds", str(staged), "--no-access-log"],

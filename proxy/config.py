@@ -455,5 +455,53 @@ class Config:
         hay = f"{title} {remarks}"
         return any(k and k in hay for k in kws)
 
+    def validate(self) -> tuple[bool, str]:
+        """验证配置有效性，返回 (是否有效, 错误信息)"""
+        try:
+            # 验证源配置
+            sources = self._cfg.get("sources", [])
+            if not isinstance(sources, list):
+                return False, "sources 必须是列表"
+            
+            if len(sources) > 100:
+                return False, "源数量过多，最多支持100个源"
+            
+            source_ids = set()
+            for i, source in enumerate(sources):
+                if not isinstance(source, dict):
+                    return False, f"源 {i} 必须是字典"
+                
+                if not source.get("id"):
+                    return False, f"源 {i} 缺少 id"
+                
+                if source["id"] in source_ids:
+                    return False, f"源 {i} id 重复: {source['id']}"
+                source_ids.add(source["id"])
+                
+                if not source.get("name"):
+                    return False, f"源 {i} 缺少 name"
+                
+                # 验证其他配置项
+                for key in ["max_per_keyword", "line_fastest_max", "hot_limit"]:
+                    if key in self._cfg:
+                        value = self._cfg[key]
+                        if not isinstance(value, int) or value <= 0:
+                            return False, f"{key} 必须是正整数"
+            
+            # 验证关键词配置
+            if "junk_keywords" in self._cfg:
+                kws = self._cfg["junk_keywords"]
+                if not isinstance(kws, list):
+                    return False, "junk_keywords 必须是列表"
+                
+                for kw in kws:
+                    if not isinstance(kw, str) or len(kw) > 30:
+                        return False, "关键词必须是字符串且长度不超过30"
+            
+            return True, "配置验证通过"
+            
+        except Exception as e:
+            return False, f"配置验证异常: {e}"
+
 
 config = Config()

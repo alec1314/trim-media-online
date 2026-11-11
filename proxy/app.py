@@ -78,6 +78,7 @@ def _self_url(url: str) -> str:
 _search_cache: dict[str, tuple[float, list]] = {}
 _search_inflight: dict[str, asyncio.Future] = {}
 _search_cache_lock = asyncio.Lock()
+_search_semaphore = asyncio.Semaphore(8)  # 限制搜索最大并发数，避免资源耗尽
 # 聚合 brief 级缓存：搜索框与榜单点详情共用，避免同一片名重复全源搜索。
 _briefs_cache: dict[str, tuple[float, list[dict]]] = {}
 _briefs_cache_lock = asyncio.Lock()
@@ -840,13 +841,75 @@ async def _aggregate_briefs(keyword: str, maxn: int | None = None,
     return result
 
 
+def _cleanup_expired_cache():
+    """清理过期缓存，避免内存泄漏"""
+    now = time.time()
+    # 清理搜索缓存
+    expired_search = [k for k, (ts, _) in _search_cache.items() if now - ts > CACHE_TTL]
+    for k in expired_search:
+        _search_cache.pop(k, None)
+    # 清理简介缓存
+    expired_briefs = [k for k, (ts, _) in _briefs_cache.items() if now - ts > CACHE_TTL]
+    for k in expired_briefs:
+        _briefs_cache.pop(k, None)
+
+
+class SimpleMetrics:
+    """简单的性能指标，同步记录，不阻塞主流程"""
+    def __init__(self):
+        self._stats = {
+            "total_searches": 0,
+            "successful_searches": 0,
+            "failed_searches": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "avg_search_time": 0.0,
+            "search_times": []
+        }
+    
+    def record_search(self, success: bool, duration: float = 0.0):
+        """记录搜索结果"""
+        self._stats["total_searches"] += 1
+        if success:
+            self._stats["successful_searches"] += 1
+        else:
+            self._stats["failed_searches"] += 1
+        
+        if duration > 0:
+            self._stats["search_times"].append(duration)
+            # 保持最近100次搜索的时间记录
+            if len(self._stats["search_times"]) > 100:
+                self._stats["search_times"] = self._stats["search_times"][-100:]
+            # 计算平均时间
+            self._stats["avg_search_time"] = sum(self._stats["search_times"]) / len(self._stats["search_times"])
+    
+    def record_cache_hit(self):
+        """记录缓存命中"""
+        self._stats["cache_hits"] += 1
+    
+    def record_cache_miss(self):
+        """记录缓存未命中"""
+        self._stats["cache_misses"] += 1
+    
+    def get_stats(self):
+        """获取统计信息"""
+        return self._stats.copy()
+
+
+# 全局指标实例
+_metrics = SimpleMetrics()
+
+
 async def online_search(keyword: str, client: httpx.AsyncClient,
                         fast_only: bool = True) -> list:
+    start_time = time.time()
     now = time.time()
     cache_key = keyword if not fast_only else keyword + "\x00fast"
     async with _search_cache_lock:
         if cache_key in _search_cache and now - _search_cache[cache_key][0] < CACHE_TTL:
+            _metrics.record_cache_hit()
             return _search_cache[cache_key][1]
+        _metrics.record_cache_miss()
     fut = _search_inflight.get(cache_key)
     if fut is None:
         fut = asyncio.get_event_loop().create_future()
@@ -854,21 +917,46 @@ async def online_search(keyword: str, client: httpx.AsyncClient,
 
         async def work():
             try:
-                # 全局搜索框走 fast_only：只查秒回的标准 CMS 直链源（实测 ~2.4s
-                # 数十条）。若带上几十个 redroid 真机源（加固/spider/drpy），它们
-                # 争抢仅有的 3 台设备、单源可能长时间不返回，而搜索 HTTP 预算很短，
-                # 会导致整个在线搜索结果为空。真机源在各自媒体库/详情与播放回源里
-                # 仍照常使用，不影响其可见性。
-                briefs = await _aggregate_briefs(keyword, fast_only=fast_only)
-                items = [inj.search_item(b) for b in briefs]
-                async with _search_cache_lock:
-                    _search_cache[cache_key] = (time.time(), items)
-                if not fut.done():
-                    fut.set_result(items)
-            except Exception:
+                # 使用信号量限制并发数，避免资源耗尽
+                async with _search_semaphore:
+                    # 全局搜索框走 fast_only：只查秒回的标准 CMS 直链源（实测 ~2.4s
+                    # 数十条）。若带上几十个 redroid 真机源（加固/spider/drpy），它们
+                    # 争抢仅有的 3 台设备、单源可能长时间不返回，而搜索 HTTP 预算很短，
+                    # 会导致整个在线搜索结果为空。真机源在各自媒体库/详情与播放回源里
+                    # 仍照常使用，不影响其可见性。
+                    briefs = await _aggregate_briefs(keyword, fast_only=fast_only)
+                    items = [inj.search_item(b) for b in briefs]
+                    
+                    # 搜索结果去重：按 guid 去重，避免同一部片重复显示
+                    unique_items = {}
+                    for item in items:
+                        guid = item.get("guid", "")
+                        if guid and guid not in unique_items:
+                            unique_items[guid] = item
+                    
+                    items = list(unique_items.values())
+                    async with _search_cache_lock:
+                        _search_cache[cache_key] = (time.time(), items)
+                    if not fut.done():
+                        fut.set_result(items)
+                        duration = time.time() - start_time
+                        _metrics.record_search(True, duration)
+            except Exception as e:
                 # 客户端断连会让 fut 被取消，此时再 set_result 会抛 InvalidStateError
                 if not fut.done():
                     fut.set_result([])
+                duration = time.time() - start_time
+                _metrics.record_search(False, duration)
+                # 增强错误日志，便于诊断
+                import traceback
+                error_info = {
+                    "keyword": keyword,
+                    "fast_only": fast_only,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "traceback": traceback.format_exc()[:500]  # 限制长度
+                }
+                print(f"[搜索异常] {error_info}")
             finally:
                 _search_inflight.pop(cache_key, None)
 
@@ -4045,8 +4133,17 @@ def _schedule_seg_prefetch(mg: str, request: Request, headers: dict) -> None:
             async def _run(key=key, params=params, headers=headers):
                 try:
                     await _seg_load(mg, params, headers, None, request)
-                except Exception:  # noqa: BLE001
-                    pass
+except Exception as e:  # noqa: BLE001
+            # 增强错误日志，便于诊断
+            import traceback
+            error_info = {
+                "brief_processing": True,
+                "title": g["rep"].get("title", "unknown") if g.get("rep") else "unknown",
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "traceback": traceback.format_exc()[:300]
+            }
+            print(f"[简介处理异常] {error_info}")
                 finally:
                     _SEG_INFLIGHT.discard(key)
             asyncio.create_task(_run())
@@ -4272,6 +4369,8 @@ async def online_poster(tok_path: str, request: Request):
 
 @app.get("/_ext/healthz")
 async def healthz():
+    # 定期清理过期缓存
+    _cleanup_expired_cache()
     return {"ok": True, "service": "trim-media-online", "upstream": _up_status()}
 
 
