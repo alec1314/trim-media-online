@@ -235,6 +235,47 @@ def chart_card(item: dict) -> dict:
     }
 
 
+# 结果片名在榜单片名之后的合法「修饰」续接：季/部/集/版本/地区/完结状态。
+# 只允许这些，避免把「八仙过海」绑给榜单片「八仙！」（那是另一部老剧）。
+_CHART_SUFFIX_RE = re.compile(
+    r"^(?:第[0-9零一二三四五六七八九十百百]+[季部期辑篇]|"
+    r"[Ss]\d{1,2}|[Ss]eason\s*\d{1,2}|"
+    r"国语|粤语|原声|配音|未删减|完整版|普及版|"
+    r"上|下|前|后|中|完结|大结局)$")
+
+
+def _chart_title_match(chart_title: str, chart_year, title: str) -> bool:
+    """榜单片与候选片源的严格同名匹配。
+
+    对齐上游 fnmedia-ext v1.0.0 的策略：严格同名同年匹配，**宁可不显示也
+    不串到另一部同名作品**。
+
+    为何不能用「包含」匹配：资源站的 wd 是模糊搜索，搜「八仙」会回来
+    《八仙过海》《八仙全传》等一票老剧；用包含匹配会把 1990 年的老剧绑给
+    2026 年的榜单片「八仙！」，用户点开就播错片。
+
+    为何不能再要年份硬相等：大量苹果 CMS 源不返回年份（vod_year 为空），
+    上游 v0.2.6 专门修过「不返回年份而未并入同名影片」。因此年份只在两边
+    都有时用于加分排序，不作为准入门槛；片名必须严格对得上。
+
+    认可三种形态：
+      1) 归一化后完全相等            「八仙过海」==「八仙过海」
+      2) 结果是「榜单名 + 合法修饰」  「八仙 第一季」「八仙 国语」
+      3) 榜单名是「结果 + 合法修饰」  「八仙！第一季」对结果「八仙」
+    """
+    want = _norm_title(chart_title)
+    got = _norm_title(title)
+    if not want or not got:
+        return False
+    if want == got:
+        return True
+    if got.startswith(want):
+        return bool(_CHART_SUFFIX_RE.match(got[len(want):]))
+    if want.startswith(got):
+        return bool(_CHART_SUFFIX_RE.match(want[len(got):]))
+    return False
+
+
 def start_resolve_chart(guid: str) -> asyncio.Future | None:
     """启动榜单 guid 的后台解析（单飞），立即返回在途 Future；不阻塞当前请求。"""
     existing = store.get_title_by_guid(guid)
@@ -256,34 +297,39 @@ def start_resolve_chart(guid: str) -> asyncio.Future | None:
                 return
             briefs = await asyncio.wait_for(
                 _aggregate_briefs(item["title"], 12), timeout=25)
-            # 相关性：归一化片名必须包含完整榜单片名（分词全部命中），否则视为无源
-            want = _norm_title(item["title"])
-            want_tokens = [_norm_title(t) for t in re.split(r"[\s]+", item["title"]) if _norm_title(t)]
+            # 严格同名匹配：搜不到同名片源就认定「暂无在线片源」，
+            # 绝不把模糊搜回来的第一部当成这一部（那是把用户导向错片）。
             best = None
+            how = ""
             for b in briefs:
-                n = _norm_title(b.get("title", ""))
-                if n and (want in n or (len(want_tokens) > 1
-                                        and all(tok in n for tok in want_tokens))):
+                if _chart_title_match(item["title"], item.get("year"),
+                                      b.get("title", "")):
                     best = b
+                    how = "严格同名匹配"
                     break
-            if best is None and briefs:
-                # 宽松兜底：取线路最多者（片名归一后高度重叠）
-                best = briefs[0]
-            if best is not None:
-                # 关键：把可播放 brief 的身份换成 chart guid，使播放链挂到榜单卡片
-                bound = dict(best)
-                bound["guid"] = guid
-                bound["chart"] = {"title": item["title"], "cat": item["cat"],
-                                  "cover": item.get("cover", ""),
-                                  "rating": item.get("rating", 0)}
-                _chart_resolved[guid] = bound
-                store.remember_merged([bound])
-                _PENDING_MEDIA_CHART.pop(media_guid(guid), None)
-                _CHART_FAILED_TS.pop(guid, None)
-            else:
+            if best is None:
+                # 诊断日志：便于用户反馈「某部片搜不到」时定位是源站没有、
+                # 还是片名写法差异（带副标题/多语言名等）。
+                _log.info("chart 未绑定 %r 候选=%s", item["title"],
+                          [b.get("title") for b in briefs][:6])
                 _CHART_FAILED_TS[guid] = time.time()
+                fut.set_result(None)
+                return
+            # 关键：把可播放 brief 的身份换成 chart guid，使播放链挂到榜单卡片
+            bound = dict(best)
+            bound["guid"] = guid
+            bound["chart"] = {"title": item["title"], "cat": item["cat"],
+                              "cover": item.get("cover", ""),
+                              "rating": item.get("rating", 0)}
+            _chart_resolved[guid] = bound
+            store.remember_merged([bound])
+            _PENDING_MEDIA_CHART.pop(media_guid(guid), None)
+            _CHART_FAILED_TS.pop(guid, None)
+            _log.info("chart 绑定 %r -> %r (%s)", item["title"],
+                      best.get("title"), how)
             fut.set_result(best)
-        except Exception:
+        except Exception as exc:
+            _log.info("chart resolve failed %s: %s", guid, exc)
             fut.set_result(None)
         finally:
             _chart_resolving.pop(guid, None)
