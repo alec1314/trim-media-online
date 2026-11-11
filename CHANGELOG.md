@@ -1,5 +1,18 @@
 # 更新日志（trim-media-online）
 
+## 1.6.1（2026-11-11）
+
+### 修复
+
+- **应用中心入口 API 返回 HTML**（左下角「管理接口未连接」+ 一键拉取/代理测试报
+  `Unexpected token '<'`）：请求以 `/app/trim-media-online/v/api/...` 形式直达主代理
+  时未命中任何路由，落入 catch-all 被透传给官方 trim-media，官方 SPA 返回
+  index.html（200 text/html），前端 `r.json()` 解析失败。修复分两层：
+  - `webui_gateway` 的请求目标解析改为兼容相对路径 / 绝对 URI / 带查询串三种形式，
+    剥前缀不再因 `startswith` 判断失败而失效；
+  - `app.py` 新增 `_strip_app_prefix` 中间件兜底，识别该前缀后剥掉再路由，
+    仅影响带此前缀的路径，飞牛影视自身 `/v` 链路不受影响。
+
 ## 1.6.0（2026-11-11）
 
 ### 修复
