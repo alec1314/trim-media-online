@@ -492,7 +492,7 @@ function renderOverview(){
 /* ---------- 虚拟媒体库 ---------- */
 let LIBS=[];
 async function loadLibs(){
-  try{const r=await jget(apiUrl("/v/api/ext/libs"));LIBS=(r.data&&r.data.libs)||[];
+  try{const r=await jget("/v/api/ext/libs");LIBS=(r.data&&r.data.libs)||[];
   }catch(e){LIBS=[];}
 }
 function catKeyOf(title){
@@ -509,7 +509,7 @@ function libCardHtml(L,ic){
 }
 async function togglePin(guid,el){
   try{
-    const r=await jpost(apiUrl("/v/api/ext/lib/pin"), {guid,pinned:el.checked});
+    const r=await jpost("/v/api/ext/lib/pin", {guid,pinned:el.checked});
     if(r.code===0){toast(el.checked?"已置顶":"已取消置顶");LIBS.forEach(x=>{if(x.guid===guid)x.pinned=el.checked;});}
     else{el.checked=!el.checked;toast(r.msg||"设置失败","fail");}
   }catch(e){el.checked=!el.checked;toast("设置失败","fail");}
@@ -547,12 +547,12 @@ function fmtTs(ts){if(!ts)return"尚未刷新";const d=new Date(ts*1000),p=n=>St
 async function saveHotCfg(){
   const body={hot_library_enabled:$("hotEnabled").checked,
     hot_refresh_interval:Math.max(1,Math.min(24,parseInt($("hotInterval").value)||6))*3600};
-  const r=await jpost(apiUrl("/v/api/ext/config"), body);
+  const r=await jpost("/v/api/ext/config", body);
   if(r.code===0){Object.assign(CFG,body);toast("热门设置已保存");await loadLibs();renderLibrary();}else toast(r.msg||"保存失败","fail");
 }
 async function refreshHot(){
   toast("开始刷新榜单…");
-  const r=await jpost(apiUrl("/v/api/ext/hot/refresh"), {});
+  const r=await jpost("/v/api/ext/hot/refresh", {});
   await loadStatus();await loadLibs();renderLibrary();
   toast(r.code===0?"榜单已刷新":(r.msg||"刷新失败"),r.code===0?"ok":"fail");
 }
@@ -604,40 +604,40 @@ function renderSources(){
 function collectPriority(){const m={};$$("[data-prio]").forEach(inp=>{
   const v=inp.value.trim();if(v!=="")m[inp.closest("tr").dataset.id]=parseInt(v)||0;});return m;}
 async function savePriority(){
-  const r=await jpost(apiUrl("/v/api/ext/source/priority"), {priority:collectPriority()});
+  const r=await jpost("/v/api/ext/source/priority", {priority:collectPriority()});
   if(r.code===0){toast("权重已保存");await loadStatus();renderSources();}else toast(r.msg||"保存失败","fail");
 }
 async function resetPriority(){
-  const r=await jpost(apiUrl("/v/api/ext/source/priority"), {priority:{}});
+  const r=await jpost("/v/api/ext/source/priority", {priority:{}});
   if(r.code===0){toast("已恢复默认权重");await loadStatus();renderSources();}else toast("失败","fail");
 }
 async function savePreferQ(){
-  const r=await jpost(apiUrl("/v/api/ext/config"), {prefer_quality_source:$("preferQ").checked});
+  const r=await jpost("/v/api/ext/config", {prefer_quality_source:$("preferQ").checked});
   if(r.code===0){CFG.prefer_quality_source=$("preferQ").checked;toast("已保存");}else toast("失败","fail");
 }
 function srcName(id){const s=CFG.sources.find(x=>x.id===id);return s?s.name:id;}
 async function toggleEnable(id,on){
   const sources=CFG.sources.map(s=>({id:s.id,enabled:s.id===id?on:s.enabled}));
-  const r=await jpost(apiUrl("/v/api/ext/config"), {sources});
+  const r=await jpost("/v/api/ext/config", {sources});
   if(r.code===0){CFG.sources.find(x=>x.id===id).enabled=on;
     $("srcCount").textContent=CFG.sources.filter(x=>x.enabled).length+"/"+CFG.sources.length+" 启用";toast(on?"已启用":"已停用");}
   else toast(r.msg||"保存失败","fail");
 }
 async function toggleStandalone(id,on){
-  const r=await jpost(apiUrl("/v/api/ext/source/standalone"), {id,standalone:on});
+  const r=await jpost("/v/api/ext/source/standalone", {id,standalone:on});
   if(r.code===0){const s=CFG.sources.find(x=>x.id===id);if(s){s.standalone=on;if(!on){s.loose_filter=false;s.adult=false;}}
     renderSources();toast(on?"已生成独立媒体库（后台建库中）":"已取消独立媒体库");}
   else{toast(r.msg||"操作失败","fail");renderSources();}
 }
 async function toggleLoose(id,on){
-  const r=await jpost(apiUrl("/v/api/ext/source/loose-filter"), {id,loose_filter:on});
+  const r=await jpost("/v/api/ext/source/loose-filter", {id,loose_filter:on});
   if(r.code===0){const s=CFG.sources.find(x=>x.id===id);if(s)s.loose_filter=on;renderSources();toast(on?"已开启非过滤":"已恢复严格过滤");}
   else{toast(r.msg||"操作失败","fail");renderSources();}
 }
 function setSt(tr,html,cls){const el=tr.querySelector("[data-st]");el.className="st "+cls;el.innerHTML=html;}
 async function testOne(id,tr){
   setSt(tr,"测试中…","wait");tr.querySelector("[data-test]").disabled=true;
-  try{const r=await jpost(apiUrl("/v/api/ext/source/test"), {id});const d=r.data;
+  try{const r=await jpost("/v/api/ext/source/test", {id});const d=r.data;
     if(d.ok)setSt(tr,`✓ ${d.elapsed_ms}ms · ${d.count}条${d.direct?(' · '+d.direct+'直链'):''}`,"ok");
     else setSt(tr,"✕ "+(d.error||"失败")+(d.elapsed_ms?(" · "+d.elapsed_ms+"ms"):""),"bad");
   }catch(e){setSt(tr,"✕ "+e,"bad");}
@@ -646,7 +646,7 @@ async function testOne(id,tr){
 async function testAll(){
   toast("正在并发测速…");
   $$("#srcRows [data-st]").forEach(el=>{el.className="st wait";el.textContent="测试中…";});
-  const r=await jpost(apiUrl("/v/api/ext/source/test-all"), {});
+  const r=await jpost("/v/api/ext/source/test-all", {});
   (r.data||[]).forEach(d=>{const tr=$("srcRows").querySelector(`tr[data-id="${d.id}"]`);if(!tr)return;
     if(d.ok)setSt(tr,`✓ ${d.elapsed_ms}ms · ${d.count}条${d.direct?(' · '+d.direct+'直链'):''}`,"ok");
     else setSt(tr,"✕ "+(d.error||"失败"),"bad");});
@@ -656,7 +656,7 @@ async function loadHealth(){
   // 源健康画像按 key=源 id 填进资源列表的成功率/延迟/状态列
   let map={};
   try{
-__PROTECTED_LINE_659__
+    const r=await (await fetch(apiUrl("/v/api/ext/source-health"))).json();
     ((r.data&&r.data.sources)||[]).forEach(s=>{map[s.key]=s;});
   }catch(e){return;}
   const G=["健康","慢","高失败率","冷却中"],GC=["ok","wait","bad","bad"];
@@ -674,7 +674,7 @@ __PROTECTED_LINE_659__
 async function addSource(){
   const name=$("addName").value.trim(),api=$("addApi").value.trim(),standalone=$("addStandalone").checked;
   if(!api){toast("请填写接口地址","fail");return;}
-  const r=await jpost(apiUrl("/v/api/ext/source/add"), {name,api,standalone});
+  const r=await jpost("/v/api/ext/source/add", {name,api,standalone});
   if(r.code===0){toast("已添加");$("addName").value="";$("addApi").value="";$("addStandalone").checked=false;
     await loadStatus();const tr=$("srcRows").querySelector(`tr[data-id="${r.data.id}"]`);if(tr&&!standalone)testOne(r.data.id,tr);}
   else toast(r.msg||"添加失败","fail");
@@ -691,7 +691,7 @@ function lunaReportText(d){
 }
 async function loadLunaStatus(){
   try{
-    const r=await jget(apiUrl("/v/api/ext/lunatv/status"));
+    const r=await jget("/v/api/ext/lunatv/status");
     const d=r.data||{},s=d.sync||{},last=d.last||{};
     const ps=$("lunaPreset"),pu=$("lunaUrl");
     if(ps)ps.value=s.preset||"jin18";
@@ -712,7 +712,7 @@ async function saveLunaCfg(){
     lunatv_sync_interval:Math.max(1,Math.min(168,parseInt($("lunaInterval").value)||12)),
     lunatv_auto_disable:$("lunaAutoDisable").checked,
   };
-  const r=await jpost(apiUrl("/v/api/ext/config"), body);
+  const r=await jpost("/v/api/ext/config", body);
   if(r.code===0){Object.assign(CFG,body);toast("同步设置已保存");}
   else toast(r.msg||"保存失败","fail");
 }
@@ -721,7 +721,7 @@ async function lunaSyncNow(btn){
   btn.disabled=true;btn.textContent="同步中…";
   $("lunaMsg").textContent="正在拉取配置并逐个测速，源较多时可能需要 1-2 分钟…";
   try{
-    const r=await jpost(apiUrl("/v/api/ext/lunatv/sync"),{
+    const r=await jpost("/v/api/ext/lunatv/sync",{
       preset:$("lunaPreset").value,url:$("lunaUrl").value.trim()});
     if(r.code!==0){$("lunaMsg").textContent=r.msg||"同步失败";toast(r.msg||"同步失败","fail");return;}
     const d=r.data||{};
@@ -767,7 +767,7 @@ async function saveSubProxy(test){
   if(!proxy){toast("请填写代理或中转地址，或点清空直连","fail");return;}
   msg.textContent="保存并测试连通性…";msg.style.color="";
   try{
-    const r=await jpost(apiUrl("/v/api/ext/subscription-proxy"), {proxy,mode});
+    const r=await jpost("/v/api/ext/subscription-proxy", {proxy,mode});
     if(r.code!==0){msg.textContent="未保存："+(r.msg||"格式错误");msg.style.color="var(--danger)";return;}
     const d=r.data||{};
     if(test){
@@ -782,7 +782,7 @@ async function saveSubProxy(test){
 async function clearSubProxy(){
   if(!confirm("清空订阅 / API 中转代理、改为直连？"))return;
   const mode=$("subProxyMode").value;
-  const r=await jpost(apiUrl("/v/api/ext/subscription-proxy"), {proxy:"",mode});
+  const r=await jpost("/v/api/ext/subscription-proxy", {proxy:"",mode});
   if(r.code===0){$("subProxyUrl").value="";$("subProxyEnable").checked=false;
     $("subProxyUrl").disabled=true;$("subProxyMode").disabled=true;$("subProxySaveBtn").disabled=true;$("subProxyClearBtn").disabled=true;
     $("subProxyMsg").textContent="已清空，当前直连";$("subProxyMsg").style.color="";toast("已切回直连");}
@@ -791,12 +791,12 @@ async function clearSubProxy(){
 // ---------- 已导入普通爬虫源管理 ----------
 async function delSource(id,name){
   if(!confirm("确定删除资源站「"+name+"」？"))return;
-  const r=await jpost(apiUrl("/v/api/ext/source/delete"), {id});
+  const r=await jpost("/v/api/ext/source/delete", {id});
   if(r.code===0){toast("已删除");await loadStatus();}else toast(r.msg||"删除失败","fail");
 }
 async function restoreBuiltin(){
   if(!confirm("确定清空全部资源站？清空后需重新添加源地址。"))return;
-  const r=await jpost(apiUrl("/v/api/ext/source/restore"), {});
+  const r=await jpost("/v/api/ext/source/restore", {});
   if(r.code===0){toast("已清空全部源");await loadStatus();}else toast("失败","fail");
 }
 
@@ -807,7 +807,7 @@ function renderKw(){
   $("kwChips").querySelectorAll("b").forEach(b=>b.onclick=()=>{KWS.splice(+b.dataset.i,1);saveKw();});
 }
 async function saveKw(){
-  const r=await jpost(apiUrl("/v/api/ext/junk-keywords"), {keywords:KWS});
+  const r=await jpost("/v/api/ext/junk-keywords", {keywords:KWS});
   if(r.code===0){KWS=r.data.junk_keywords;CFG.junk_keywords=KWS.slice();renderKw();toast("关键词已保存");}
   else toast(r.msg||"保存失败","fail");
 }
@@ -824,13 +824,13 @@ async function applyKwText(){
 }
 async function resetKw(){
   if(!confirm("恢复为默认关键词列表？"))return;
-  const r=await jpost(apiUrl("/v/api/ext/junk-keywords"), {reset:true});
+  const r=await jpost("/v/api/ext/junk-keywords", {reset:true});
   if(r.code===0){KWS=r.data.junk_keywords;CFG.junk_keywords=KWS.slice();renderKw();$("kwEdit").style.display="none";toast("已恢复默认");}
   else toast("失败","fail");
 }
 async function saveCfg(){
   const body={max_per_keyword:parseInt($("maxn").value)||12,filter_junk:$("junk").checked,online_first:$("onlineFirst").checked};
-  const r=await jpost(apiUrl("/v/api/ext/config"), body);
+  const r=await jpost("/v/api/ext/config", body);
   if(r.code===0){toast("已保存");Object.assign(CFG,body);}else toast("保存失败 "+r.msg,"fail");
 }
 async function saveLines(){
@@ -838,7 +838,7 @@ async function saveLines(){
     line_fastest_max:Math.max(2,Math.min(12,parseInt($("fastestMax").value)||6)),
     line_fastest_timeout:Math.max(1,Math.min(10,parseFloat($("fastestTimeout").value)||4)),
     line_autofail:$("lineAutofail").checked};
-  const r=await jpost(apiUrl("/v/api/ext/config"), body);
+  const r=await jpost("/v/api/ext/config", body);
   if(r.code===0){toast("已保存");Object.assign(CFG,body);}else toast("保存失败 "+r.msg,"fail");
 }
 function initDanmu(){
@@ -857,7 +857,7 @@ async function saveDanmu(){
     danmu_token:$("danmuToken").value.trim(),
     danmu_offset:Math.max(-60,Math.min(60,parseFloat($("danmuOffset").value)||0)),
     danmu_limit:Math.max(100,Math.min(3000,parseInt($("danmuLimit").value)||800))};
-  const r=await jpost(apiUrl("/v/api/ext/config"), body);
+  const r=await jpost("/v/api/ext/config", body);
   if(r.code===0){
     toast("已保存");Object.assign(CFG,body);
     $("danmuMsg").textContent=(body.danmu_enabled&&body.danmu_api)
@@ -867,13 +867,13 @@ async function saveDanmu(){
 async function testDanmu(){
   const m=$("danmuMsg");m.textContent="测试中…";
   try{
-    const r=await jpost(apiUrl("/v/api/ext/danmu/test"), {api:$("danmuApi").value.trim(),token:$("danmuToken").value.trim()});
+    const r=await jpost("/v/api/ext/danmu/test", {api:$("danmuApi").value.trim(),token:$("danmuToken").value.trim()});
     m.textContent=(r.data&&r.data.msg)||r.msg||"完成";
   }catch(e){m.textContent="测试失败："+e;}
 }
 async function loadOnline(){
   const kw=$("kw").value.trim();
-  const r=await jget(apiUrl("/v/api/ext/online?limit=500"+(kw?("&q="+encodeURIComponent(kw)):"")));
+  const r=await jget("/v/api/ext/online?limit=500"+(kw?("&q="+encodeURIComponent(kw)):""));
   const list=r.data||[];$("cacheN").textContent=list.length;
   const tb=$("rows");
   if(!list.length){tb.innerHTML='<tr><td colspan="3" class="muted">暂无，先去飞牛搜索任意中文片名</td></tr>';return;}
@@ -886,7 +886,7 @@ async function loadOnline(){
 
 /* ---------- 初始化 ---------- */
 async function loadStatus(){
-  STATUS=await jget(apiUrl("/v/api/ext/status"));
+  STATUS=await jget("/v/api/ext/status");
   CFG=STATUS.config;
   PRIO=STATUS.source_priority||{};
 }
