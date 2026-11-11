@@ -455,53 +455,40 @@ class Config:
         hay = f"{title} {remarks}"
         return any(k and k in hay for k in kws)
 
-    def validate(self) -> tuple[bool, str]:
-        """验证配置有效性，返回 (是否有效, 错误信息)"""
+    def validate(self) -> tuple[bool, list[str]]:
+        """诊断性配置检查：自动纠正越界数值，仅报告无法自动修复的结构问题。
+
+        返回 (是否有严重问题, 提示列表)。不用于阻塞服务启动——
+        配置异常时纠正比拒绝启动更安全（服务起不来意味着飞牛影视回落官方）。"""
+        warnings: list[str] = []
         try:
-            # 验证源配置
             sources = self._cfg.get("sources", [])
             if not isinstance(sources, list):
-                return False, "sources 必须是列表"
-            
-            if len(sources) > 100:
-                return False, "源数量过多，最多支持100个源"
-            
-            source_ids = set()
+                return False, ["sources 不是列表（load 已兜底为默认值）"]
+
             for i, source in enumerate(sources):
-                if not isinstance(source, dict):
-                    return False, f"源 {i} 必须是字典"
-                
-                if not source.get("id"):
-                    return False, f"源 {i} 缺少 id"
-                
-                if source["id"] in source_ids:
-                    return False, f"源 {i} id 重复: {source['id']}"
-                source_ids.add(source["id"])
-                
-                if not source.get("name"):
-                    return False, f"源 {i} 缺少 name"
-                
-                # 验证其他配置项
-                for key in ["max_per_keyword", "line_fastest_max", "hot_limit"]:
-                    if key in self._cfg:
-                        value = self._cfg[key]
-                        if not isinstance(value, int) or value <= 0:
-                            return False, f"{key} 必须是正整数"
-            
-            # 验证关键词配置
-            if "junk_keywords" in self._cfg:
-                kws = self._cfg["junk_keywords"]
-                if not isinstance(kws, list):
-                    return False, "junk_keywords 必须是列表"
-                
-                for kw in kws:
-                    if not isinstance(kw, str) or len(kw) > 30:
-                        return False, "关键词必须是字符串且长度不超过30"
-            
-            return True, "配置验证通过"
-            
-        except Exception as e:
-            return False, f"配置验证异常: {e}"
+                if not isinstance(source, dict) or not source.get("id"):
+                    warnings.append(f"源 {i} 结构异常，已忽略")
+                    continue
+
+            # 越界数值直接夹取纠正
+            for key, lo, hi in (("max_per_keyword", 1, 50),
+                                ("line_fastest_max", 2, 12),
+                                ("hot_limit", 60, 800)):
+                if key in self._cfg:
+                    try:
+                        v = int(self._cfg[key])
+                    except (TypeError, ValueError):
+                        self._cfg[key] = DEFAULTS[key]
+                        warnings.append(f"{key} 非法，已重置为默认 {DEFAULTS[key]}")
+                        continue
+                    if v < lo or v > hi:
+                        self._cfg[key] = max(lo, min(hi, v))
+                        warnings.append(f"{key}={v} 越界，已夹取为 {self._cfg[key]}")
+
+            return True, warnings
+        except Exception as e:  # noqa: BLE001
+            return False, [f"配置检查异常: {type(e).__name__}: {e}"]
 
 
 config = Config()

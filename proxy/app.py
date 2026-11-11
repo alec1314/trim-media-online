@@ -829,8 +829,10 @@ async def _aggregate_briefs(keyword: str, maxn: int | None = None,
             _pl, _hg, _ = _brief_line_flags(brief)
             brief["_pan"] = _pl
             brief["_health"] = _hg
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _e:  # noqa: BLE001
+            # 角标失败不影响主流程，仅记录简要日志便于诊断
+            print(f"[简介角标失败] title={brief.get('title', '?')} "
+                  f"{type(_e).__name__}: {_e}")
         briefs.append(brief)
     result = store.remember_merged(briefs)
     async with _briefs_cache_lock:
@@ -4133,17 +4135,8 @@ def _schedule_seg_prefetch(mg: str, request: Request, headers: dict) -> None:
             async def _run(key=key, params=params, headers=headers):
                 try:
                     await _seg_load(mg, params, headers, None, request)
-except Exception as e:  # noqa: BLE001
-            # 增强错误日志，便于诊断
-            import traceback
-            error_info = {
-                "brief_processing": True,
-                "title": g["rep"].get("title", "unknown") if g.get("rep") else "unknown",
-                "error_type": type(e).__name__,
-                "error_message": str(e),
-                "traceback": traceback.format_exc()[:300]
-            }
-            print(f"[简介处理异常] {error_info}")
+                except Exception:  # noqa: BLE001
+                    pass
                 finally:
                     _SEG_INFLIGHT.discard(key)
             asyncio.create_task(_run())
