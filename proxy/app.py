@@ -522,6 +522,27 @@ for _noisy in ("httpx", "httpcore", "httpcore.http11", "httpcore.connection",
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 
+APP_PREFIX = "/app/trim-media-online"
+
+
+@app.middleware("http")
+async def _strip_app_prefix(request: Request, call_next):
+    """应用中心入口的请求会带 /app/trim-media-online 前缀。
+
+    网关已负责剥前缀，但当请求以绝对 URI 形式直达（未经过网关剥前缀）时，
+    路径仍带前缀，会落到 catch-all 并被透传给官方后端，官方返回 SPA 的
+    HTML 页面 —— 前端 r.json() 便报 Unexpected token '<'。这里再兜一层：
+    识别到该前缀就剥掉，让路由按 /v/... 正常匹配。仅影响带此前缀的路径，
+    飞牛影视自身的 /v 链路完全不受影响。"""
+    scope = request.scope
+    path = scope.get("path", "")
+    if path.startswith(APP_PREFIX):
+        new_path = path[len(APP_PREFIX):] or "/"
+        scope["path"] = new_path
+        scope["raw_path"] = new_path.encode()
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def _access(request: Request, call_next):
     resp = await call_next(request)

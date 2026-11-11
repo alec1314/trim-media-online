@@ -72,18 +72,42 @@ def _recv_body(client: socket.socket, partial: bytes, length: int) -> bytes | No
     return body[:length]
 
 
+def _split_target(target: str) -> tuple[str, str]:
+    """把请求目标拆成 (路径, 查询串)。
+
+    网关上游（trim_http_cgi / nginx proxy_pass）可能发来三种形式：
+      - 相对路径      /app/trim-media-online/v/api/ext/status
+      - 绝对 URI      http://host/app/trim-media-online/v/api/ext/status
+      - 带查询串      /app/trim-media-online/v/api/ext/status?a=1
+    三种都要能正确剥掉 gatewayPrefix。"""
+    raw = target
+    # 绝对 URI：scheme://host/path?query
+    if "://" in raw:
+        rest = raw.split("://", 1)[1]
+        slash = rest.find("/")
+        raw = rest[slash:] if slash >= 0 else "/"
+    if not raw.startswith("/"):
+        raw = "/" + raw
+    path, sep, query = raw.partition("?")
+    return path, (sep + query if sep else "")
+
+
 def _rewrite_request(head: bytes) -> bytes:
     lines = head.split(b"\r\n")
     parts = lines[0].split()
     if len(parts) >= 2:
         method, target = parts[0], parts[1].decode("latin-1")
-        path = target.split("?", 1)[0]
+        path, query = _split_target(target)
         if path == APP_PREFIX or path == APP_PREFIX + "/":
-            target = "/v/online-admin"
+            newpath = "/v/online-admin"
         elif path.startswith(APP_PREFIX + "/"):
-            target = target[len(APP_PREFIX):]
-            if not target.startswith("/"):
-                target = "/" + target
+            newpath = path[len(APP_PREFIX):]
+            if not newpath.startswith("/"):
+                newpath = "/" + newpath
+        else:
+            # 没带前缀（上游已剥）：原样保留路径，只去掉可能存在的绝对 URI 形式
+            newpath = path
+        target = newpath + query
         lines[0] = b" ".join([method, target.encode("latin-1"), parts[2]])
 
     # 逐头重建，移除 Expect 和网关注入的长度外冗余头；其余原样保留。
