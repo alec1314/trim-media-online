@@ -43,6 +43,7 @@ import charts as chartmod
 from charts import chart_cache
 import danmu
 import catalog as catalogmod
+import adfilter
 from catalog import catalog
 import history as histmod
 from history import history
@@ -3544,6 +3545,17 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
     if text is None:
         return None, None
 
+    # 播放去广告（同步规则、零额外网络请求；不确定就不动）。
+    # 放在这里而不是起播选线前：绝不往关键路径加探测，也不改变选线语义。
+    if config.get().get("ad_filter_enabled"):
+        try:
+            filtered, removed = adfilter.filter_hls(text)
+            if removed and filtered:
+                _log.info("adfilter %s removed=%d", mg, removed)
+                text = filtered
+        except Exception:  # noqa: BLE001
+            pass  # 过滤异常绝不影响播放
+
     # 记录媒体总时长：EXTINF 累加。播放器用 play/info 的 item.duration 夹取续播点，
     # 为 0 会导致任何 ts>0 都被归零（表现为“不记忆上次观看节点”）。
     if "#EXTINF" in text:
@@ -4512,6 +4524,7 @@ async def ext_set_config(request: Request):
         "lunatv_sync_interval", "lunatv_auto_disable",
         "danmu_enabled", "danmu_api", "danmu_token", "danmu_auto",
         "danmu_offset", "danmu_limit",
+        "ad_filter_enabled",
     }
     patch = {k: v for k, v in body.items() if k in allowed}
     if "danmu_api" in patch:
@@ -4527,6 +4540,8 @@ async def ext_set_config(request: Request):
         patch["danmu_enabled"] = bool(patch["danmu_enabled"])
     if "danmu_auto" in patch:
         patch["danmu_auto"] = bool(patch["danmu_auto"])
+    if "ad_filter_enabled" in patch:
+        patch["ad_filter_enabled"] = bool(patch["ad_filter_enabled"])
     if "hot_library_title" in patch:
         patch["hot_library_title"] = str(patch["hot_library_title"]).strip()[:20] or HOT_DEFAULT_TITLE
     if "hot_limit" in patch:

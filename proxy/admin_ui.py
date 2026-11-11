@@ -348,6 +348,16 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
       </div>
 
       <div class="card">
+        <div class="card-title">播放去广告</div>
+        <label class="switch-row"><input type="checkbox" id="adFilterEnabled"/>
+          <span>剥除片头/片中广告分片<span class="sub">默认关闭。开启后播放当前线路时分析 m3u8，移除明显的广告分片；判断不确定就保留原片，不影响播放</span></span></label>
+        <div class="btn-row">
+          <button class="primary small" onclick="saveAdFilter()">保存</button>
+        </div>
+        <div id="adFilterMsg" class="muted sm" style="margin-top:6px"></div>
+      </div>
+
+      <div class="card">
         <div class="card-title">使用说明</div>
         <div class="stack sm muted" style="line-height:1.7">
           <div>· 先自行部署 danmu_api，例如：<code>docker run -d -p 9321:9321 -e TOKEN=87654321 --name danmu-api logvar/danmu-api:latest</code></div>
@@ -474,7 +484,7 @@ async function switchPage(page){
     try{loadLunaStatus();}catch(e){}
     try{if(typeof initSubProxy==="function")initSubProxy();}catch(e){}
   }
-  if(page==="danmu"){try{if(!CFG)await loadStatus();}catch(e){}initDanmu();}
+  if(page==="danmu"){try{if(!CFG)await loadStatus();}catch(e){}initDanmu();initAdFilter();}
   if(page==="about"){}
 }
 $$("[data-page]").forEach(b=>b.addEventListener("click",()=>switchPage(b.dataset.page)));
@@ -864,6 +874,19 @@ async function saveDanmu(){
       ?"已启用，下次进入播放页生效。":"已保存（未启用或未填写接口地址）。";
   }else toast("保存失败 "+(r.msg||""),"fail");
 }
+function initAdFilter(){
+  $("adFilterEnabled").checked=!!(CFG&&CFG.ad_filter_enabled);
+}
+async function saveAdFilter(){
+  const body={ad_filter_enabled:$("adFilterEnabled").checked};
+  const r=await jpost("/v/api/ext/config", body);
+  if(r.code===0){
+    toast("已保存");Object.assign(CFG,body);
+    $("adFilterMsg").textContent=body.ad_filter_enabled
+      ?"已开启，下次起播生效。判断不确定的分片会保留，不影响正片。"
+      :"已关闭，播放列表不再过滤。";
+  }else toast("保存失败 "+(r.msg||""),"fail");
+}
 async function testDanmu(){
   const m=$("danmuMsg");m.textContent="测试中…";
   try{
@@ -909,7 +932,7 @@ async function init(){
     $("lineAutofail").checked=CFG.line_autofail!==false;
     $("fastestMax").value=CFG.line_fastest_max||6;
     $("fastestTimeout").value=CFG.line_fastest_timeout||4;
-    renderKw();renderSources();initDanmu();
+    renderKw();renderSources();initDanmu();initAdFilter();
     try{loadLunaStatus();}catch(e){}
     loadOnline();
     renderOverview();
