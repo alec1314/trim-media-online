@@ -499,12 +499,13 @@ def _match_names(title: str, season: int, episode: int, year: str, ep_title: str
 async def _match_cached(base: str, title: str, season: int, episode: int,
                         year: str, ep_title: str) -> int | None:
     key = f"{base}|{title}|{season}|{episode}|{year}"
-    hit = _MATCH.get(key)
     now = time.time()
-    if hit:
-        ts, eid = hit
-        if now - ts < (_TTL if eid else _NEG_TTL):
-            return eid
+    async with _LOCK:
+        hit = _MATCH.get(key)
+        if hit:
+            ts, eid = hit
+            if now - ts < (_TTL if eid else _NEG_TTL):
+                return eid
     eid = None
     last_exc: Exception | None = None
     for name in _match_names(title, season, episode, year, ep_title):
@@ -524,10 +525,11 @@ async def _match_cached(base: str, title: str, season: int, episode: int,
     if last_exc is not None:
         # 网络/接口抖动导致的失败不写负缓存，下次播放直接重试
         return None
-    _MATCH[key] = (now, eid)
-    if len(_MATCH) > _MAX_CACHE:
-        for k in list(_MATCH)[: _MAX_CACHE // 2]:
-            _MATCH.pop(k, None)
+    async with _LOCK:
+        _MATCH[key] = (now, eid)
+        if len(_MATCH) > _MAX_CACHE:
+            for k in list(_MATCH)[: _MAX_CACHE // 2]:
+                _MATCH.pop(k, None)
     return eid
 
 

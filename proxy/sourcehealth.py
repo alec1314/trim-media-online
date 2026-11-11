@@ -68,6 +68,8 @@ def _load() -> dict:
 
 
 _STATS: dict[str, dict] = _load()
+_LAST_FLUSH = 0.0
+_FLUSH_INTERVAL = 30.0
 
 
 def _save_locked() -> None:
@@ -122,6 +124,11 @@ def record(key: str, ok: bool, latency: float = 0.0) -> None:
             s["last_fail"] = now
             if s["fails"] >= DEAD_FAILS:
                 s["dead_until"] = now + DEAD_COOLDOWN
+
+        global _LAST_FLUSH
+        if now - _LAST_FLUSH >= _FLUSH_INTERVAL:
+            _save_locked()
+            _LAST_FLUSH = now
 
 
 def stats(key: str) -> dict:

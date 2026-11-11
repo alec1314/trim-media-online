@@ -248,21 +248,22 @@ async def _probe_hls(client: httpx.AsyncClient, media_url: str,
     return best
 
 
-def cache_key(title_guid: str, line: str) -> str:
-    # 按「标题+线路」缓存：同一剧各集分辨率一致，但不同影片可能不同；
-    # 不绑具体 URL（带时效签名，每次解码都变）
-    return f"{title_guid}|{line}"
+def cache_key(source_id: str, line: str) -> str:
+    # 按「源+线路」缓存：同一源的同一条线路，分辨率通常一致，
+    # 不同影片复用已探测结果，避免重复 ffprobe。不绑具体 URL
+    #（带时效签名，每次解码都变）。
+    return f"{source_id}|{line}"
 
 
 async def resolve(client: httpx.AsyncClient, media_url: str, *,
-                  title_guid: str, line: str,
+                  source_id: str, line: str,
                   headers: dict | None = None, kind: str = "") -> str:
     """返回 '1080P' 这样的标注；探测不到返回 ''。带缓存。
 
     kind 可显式传 "m3u8"/"mp4"（有些鉴权 URL 是哈希路径、无扩展名）。"""
     if not media_url:
         return ""
-    key = cache_key(title_guid, line)
+    key = cache_key(source_id, line)
     now = time.time()
     hit = _CACHE.get(key)
     if hit and now - hit[0] < _TTL:
@@ -288,7 +289,7 @@ async def resolve(client: httpx.AsyncClient, media_url: str, *,
     return label
 
 
-def cached_label(title_guid: str, line: str) -> str:
+def cached_label(source_id: str, line: str) -> str:
     """不触发探测，只取已有缓存（用于先快速出菜单、后台探测后刷新）。"""
-    hit = _CACHE.get(cache_key(title_guid, line))
+    hit = _CACHE.get(cache_key(source_id, line))
     return hit[1] if hit else ""

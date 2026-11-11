@@ -77,8 +77,10 @@ def _self_url(url: str) -> str:
     return url
 _search_cache: dict[str, tuple[float, list]] = {}
 _search_inflight: dict[str, asyncio.Future] = {}
+_search_cache_lock = asyncio.Lock()
 # 聚合 brief 级缓存：搜索框与榜单点详情共用，避免同一片名重复全源搜索。
 _briefs_cache: dict[str, tuple[float, list[dict]]] = {}
+_briefs_cache_lock = asyncio.Lock()
 CACHE_TTL = 120
 # 在线热门按内容拆成 4 个虚拟媒体库。guid 由固定串 md5 派生，保持稳定。
 HOT_CATEGORIES = [
@@ -830,10 +832,11 @@ async def _aggregate_briefs(keyword: str, maxn: int | None = None,
             pass
         briefs.append(brief)
     result = store.remember_merged(briefs)
-    _briefs_cache[ck] = (time.time(), result)
-    if len(_briefs_cache) > 500:
-        for k in list(_briefs_cache)[:200]:
-            _briefs_cache.pop(k, None)
+    async with _briefs_cache_lock:
+        _briefs_cache[ck] = (time.time(), result)
+        if len(_briefs_cache) > 500:
+            for k in list(_briefs_cache)[:200]:
+                _briefs_cache.pop(k, None)
     return result
 
 
@@ -841,8 +844,9 @@ async def online_search(keyword: str, client: httpx.AsyncClient,
                         fast_only: bool = True) -> list:
     now = time.time()
     cache_key = keyword if not fast_only else keyword + "\x00fast"
-    if cache_key in _search_cache and now - _search_cache[cache_key][0] < CACHE_TTL:
-        return _search_cache[cache_key][1]
+    async with _search_cache_lock:
+        if cache_key in _search_cache and now - _search_cache[cache_key][0] < CACHE_TTL:
+            return _search_cache[cache_key][1]
     fut = _search_inflight.get(cache_key)
     if fut is None:
         fut = asyncio.get_event_loop().create_future()
@@ -857,7 +861,8 @@ async def online_search(keyword: str, client: httpx.AsyncClient,
                 # 仍照常使用，不影响其可见性。
                 briefs = await _aggregate_briefs(keyword, fast_only=fast_only)
                 items = [inj.search_item(b) for b in briefs]
-                _search_cache[cache_key] = (time.time(), items)
+                async with _search_cache_lock:
+                    _search_cache[cache_key] = (time.time(), items)
                 if not fut.done():
                     fut.set_result(items)
             except Exception:
