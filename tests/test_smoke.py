@@ -16,6 +16,9 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
+
+from starlette.requests import Request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "proxy"))
@@ -45,6 +48,7 @@ class AdminApiSmokeTests(unittest.TestCase):
     def setUpClass(cls):
         from fastapi.testclient import TestClient
         import app as appmod
+        cls.appmod = appmod
         cls.client = TestClient(appmod.app)
 
     def test_management_apis_return_json(self):
@@ -76,10 +80,68 @@ class AdminApiSmokeTests(unittest.TestCase):
         self.assertIn("version", body)
 
     def test_config_roundtrip_safe(self):
-        r = self.client.post("/v/api/ext/config",
-                             json={"ad_filter_enabled": False})
+        # patch 掉落盘：测试不应写真实配置文件
+        with patch.object(self.appmod.config, "save", new=Mock()):
+            r = self.client.post("/v/api/ext/config",
+                                 json={"ad_filter_enabled": False})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json().get("code"), 0)
+
+
+class LineMenuCompactSmokeTests(unittest.TestCase):
+    """线路菜单压缩：原生端单变体、Web 端全量、默认开启、可关。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from fastapi.testclient import TestClient
+        import app as appmod
+        cls.appmod = appmod
+        cls.client = TestClient(appmod.app)
+
+    LINES = [{"line": "pA::m3u8", "label": "A", "url": "https://a/1.m3u8"},
+             {"line": "pB::m3u8", "label": "B", "url": "https://b/2.m3u8"},
+             {"line": "pC::m3u8", "label": "C", "url": "https://c/3.m3u8"}]
+
+    def _q(self, ua, cfg):
+        t = dict(self.LINES[0], kind="movie")
+        with patch.object(self.appmod, "_line_choices",
+                          return_value=[dict(x) for x in self.LINES]), \
+             patch.object(self.appmod.config, "get", return_value=cfg):
+            return self.appmod._qualities(
+                t,
+                Request({"type": "http", "method": "POST",
+                         "path": "/v/api/v1/stream", "query_string": b"",
+                         "headers": [(b"user-agent", ua.encode())],
+                         "app": self.appmod.app}))
+
+    def test_native_compacted(self):
+        ua = "1.4.2 (com.trim.tv; build:14209; Android 35) okHttp/4.9.0"
+        self.assertEqual(len(self._q(ua, {"line_menu_compact": True})), 1)
+
+    def test_web_full(self):
+        ua = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/120 Safari/537.36")
+        self.assertEqual(len(self._q(ua, {"line_menu_compact": True})), 3)
+
+    def test_default_on_and_switchable(self):
+        from config import DEFAULTS
+        self.assertTrue(DEFAULTS.get("line_menu_compact"))
+        self.assertEqual(len(self._q("com.trim.tv okHttp",
+                                     {"line_menu_compact": False})), 3)
+
+    def test_config_api_accepts_key(self):
+        with patch.object(self.appmod.config, "save", new=Mock()):
+            r = self.client.post("/v/api/ext/config",
+                                 json={"line_menu_compact": True})
+        self.assertEqual(r.status_code, 200)
+
+    def test_warm_other_lines_survives_bad_input(self):
+        """预热绝不影响播放：任何输入都不抛异常。"""
+        req = Request({"type": "http", "method": "GET",
+                       "path": "/x", "query_string": b"", "headers": [],
+                       "app": self.appmod.app})
+        for bad in (None, {}, {"line": None}):
+            self.appmod._warm_other_lines("mg", bad, req)
 
 
 class GatewaySmokeTests(unittest.TestCase):

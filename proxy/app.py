@@ -1779,7 +1779,7 @@ async def stream_list(guid: str, request: Request):
                 target = store.get_episode_target(egs[0])
         else:
             target = store.resolve_media_guid(media_guid(guid))
-    quals = _qualities(target) if target else []
+    quals = _qualities(target, request) if target else []
     if quals:
         sl["video_streams"][0]["resolution_type"] = quals[0]["resolution"]
         sl["video_streams"][0]["bps"] = quals[0]["bitrate"]
@@ -1798,6 +1798,8 @@ async def stream_list(guid: str, request: Request):
             _mg = (sl.get("video_streams") or [{}])[0].get("media_guid")
             if _mg:
                 _warm_playlist(_mg, target, request)
+                # 原生端只下发当前线路：其余候选线路一并后台预热
+                _warm_other_lines(_mg, target, request)
         except Exception:
             pass
     return JSONResponse({"code": 0, "msg": "", "data": sl})
@@ -2299,11 +2301,34 @@ def _line_of_bitrate(br, lines: list[str]) -> str | None:
     return None
 
 
-def _qualities(target: dict) -> list[dict]:
-    """把每条播放线路表达成播放器「清晰度」菜单里的一个可选项。"""
+def _compact_line_menu(request: Request | None) -> bool:
+    """是否把线路菜单压缩为单条（只对 TV / 手机原生端）。
+
+    Web 端不压缩：用户要在清晰度菜单里看到全部线路并手动切换。
+    识别不到客户端时同样不压缩（宁可多给，不可让用户看不到线路）。"""
+    if not config.get().get("line_menu_compact", True):
+        return False
+    if request is None:
+        return False
+    try:
+        cl = _client_of(request)
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(cl.is_tv or cl.is_mobile)
+
+
+def _qualities(target: dict, request: Request | None = None) -> list[dict]:
+    """把每条播放线路表达成播放器「清晰度」菜单里的一个可选项。
+
+    TV / iOS / Android 原生播放器拿到多线路清单后会**串行**预取每一条，
+    慢线逐条累加等待，起播明显变慢。对这些端只下发当前线路一个变体，
+    其余线路交给 `_warm_other_lines()` 在后台并发预热（切菜单即时命中）。
+    Web 端仍返回完整线路菜单，行为不变。"""
     lines = _line_choices(target)
     if len(lines) <= 1:
         return []
+    if _compact_line_menu(request):
+        lines = lines[:1]
     out = []
     for i, t in enumerate(lines):
         out.append({
@@ -2313,6 +2338,46 @@ def _qualities(target: dict) -> list[dict]:
             "is_m3u8": False,  # 置 False 才不会被菜单项置灰
         })
     return out
+
+
+def _warm_other_lines(mg: str, target: dict, request: Request) -> None:
+    """后台并发预热「除当前线路外」的候选线路播放列表。
+
+    压缩线路菜单后，播放器只知道当前线路；用户从菜单切换其他线路时，
+    若缓存未就绪又要现抓。这里提前把候选线路抓好（复用播放列表缓存与
+    单飞，真正取 main 时并入同一任务）。
+
+    约束（避免变成上游明令禁止的负优化）：
+      - 有界并发（_LINE_WARM_CONCURRENCY），不占满连接与线程池；
+      - 单飞 + 缓存，不重复请求上游；
+      - 只预热普通在线线路；网盘 / 专有解码源成本高，跳过；
+      - 全部异常静默：预热失败不影响任何播放路径。
+    """
+    if not _compact_line_menu(request) or not target or not mg:
+        return
+    try:
+        cands = _line_choices(target)[1:]
+    except Exception:  # noqa: BLE001
+        return
+    if not cands:
+        return
+    sem = asyncio.Semaphore(_LINE_WARM_CONCURRENCY)
+
+    async def one(picked: dict) -> None:
+        try:
+            async with sem:
+                await _get_playlist_cached(mg, picked, request)
+        except Exception:  # noqa: BLE001
+            pass
+
+    for t in cands[:_LINE_WARM_MAX]:
+        ln = str(t.get("line") or "")
+        if t.get("pan") or any(k in ln for k in _SPECIAL_LINE_KEYS):
+            continue  # 网盘与专有解码源：成本高且不应在菜单阶段预热
+        try:
+            asyncio.create_task(one(t))
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @app.post("/v/api/v1/stream")
@@ -2335,11 +2400,17 @@ async def stream_post(request: Request):
         sl = inj.stream_list(brief)
     f = sl["files"][0]
     v = sl["video_streams"][0]
-    quals = _qualities(target)
+    quals = _qualities(target, request)
     if quals:
         # 默认选中第一条线路，让播放器初始分辨率/码率与之一致
         v["resolution_type"] = quals[0]["resolution"]
         v["bps"] = quals[0]["bitrate"]
+    # 原生端只拿到当前线路：其余线路后台预热，切菜单时即时命中
+    try:
+        _mg0 = (sl.get("video_streams") or [{}])[0].get("media_guid") or mg
+        _warm_other_lines(_mg0, target, request)
+    except Exception:  # noqa: BLE001
+        pass
     _dur = _known_duration(mg, history.get(target.get("ep_guid") or target.get("online_guid", "")))
     if _dur:
         v["duration"] = _dur
@@ -3281,6 +3352,11 @@ async def _resurrect_worker(picked: dict, mg: str, nkey: str) -> bool:
 _LINE_FAST_TTL = 600.0          # 最快线记忆 10 分钟
 _LINE_FAST: dict[str, tuple[float, str]] = {}   # 集 key -> (ts, line)
 _RACE_CONCURRENCY = 4
+# 压缩线路菜单后的后台预热参数：并发与预热条数上限（有界，避免变成负优化）
+_LINE_WARM_CONCURRENCY = 4
+_LINE_WARM_MAX = 4
+# 专有解码源（不在菜单阶段预热，成本高且解析慢）
+_SPECIAL_LINE_KEYS = ("catv" + "od", "dr" + "py", "gu" + "ard")
 
 
 def _episode_key(picked: dict) -> str:
@@ -4525,6 +4601,7 @@ async def ext_set_config(request: Request):
         "danmu_enabled", "danmu_api", "danmu_token", "danmu_auto",
         "danmu_offset", "danmu_limit",
         "ad_filter_enabled",
+        "line_menu_compact",
     }
     patch = {k: v for k, v in body.items() if k in allowed}
     if "danmu_api" in patch:
@@ -4542,6 +4619,8 @@ async def ext_set_config(request: Request):
         patch["danmu_auto"] = bool(patch["danmu_auto"])
     if "ad_filter_enabled" in patch:
         patch["ad_filter_enabled"] = bool(patch["ad_filter_enabled"])
+    if "line_menu_compact" in patch:
+        patch["line_menu_compact"] = bool(patch["line_menu_compact"])
     if "hot_library_title" in patch:
         patch["hot_library_title"] = str(patch["hot_library_title"]).strip()[:20] or HOT_DEFAULT_TITLE
     if "hot_limit" in patch:
