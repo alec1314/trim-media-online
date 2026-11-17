@@ -608,7 +608,7 @@ async def _access(request: Request, call_next):
 
 @app.middleware("http")
 async def _user_scope(request: Request, call_next):
-    """把当前请求所属的飞牛影视用户放进 contextvar，history 按用户分桶。
+    """把当前请求所属的飞牛影视用户放进 contextvar，history / marks 按用户分桶。
 
     没有令牌的请求（局域网探测、旧客户端）落到匿名桶，不会串到其他用户。
     """
