@@ -47,6 +47,7 @@ import adfilter
 from catalog import catalog
 import history as histmod
 from history import history
+import userctx
 import marks as marksmod
 from marks import marks
 from store import (store, make_guid, media_guid, video_guid, is_online_guid,
@@ -603,6 +604,19 @@ async def _access(request: Request, call_next):
         _log.info("search-unhandled %s %s ua=%r", request.method, p,
                   request.headers.get("user-agent", "")[:100])
     return resp
+
+
+@app.middleware("http")
+async def _user_scope(request: Request, call_next):
+    """把当前请求所属的飞牛影视用户放进 contextvar，history 按用户分桶。
+
+    没有令牌的请求（局域网探测、旧客户端）落到匿名桶，不会串到其他用户。
+    """
+    _utok = userctx.set_current(userctx.resolve(request))
+    try:
+        return await call_next(request)
+    finally:
+        userctx.reset(_utok)
 
 
 def up_client(req: Request) -> httpx.AsyncClient:
