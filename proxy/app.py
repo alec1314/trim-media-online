@@ -3146,6 +3146,8 @@ async def _probe_latency(cand: dict, request: Request,
         text, _cur = await _fetch_playlist(request, url, headers)
         if text is None or not _is_media_playlist(text):
             return None
+        # 留给吞吐实测复用，省掉决胜阶段再抓一次清单（起播每多 1 秒都可能让播放器超时）
+        cand["_pl"] = (text, _cur)
         # 分片级验活：部分加固源（海绵/糯米的 yximgs PNG 伪装流等）清单能下、
         # 但所有分片在源站 404（清单活、分片死）。只验清单会误判可播，起播即报错。
         # 取首个分片 Range 2KB 复核：4xx/5xx 或空体即判死，触发自动换线。
@@ -3474,8 +3476,65 @@ def _race_candidates(picked: dict) -> list[dict]:
     return cands
 
 
+# 起播吞吐实测：清单秒回 ≠ 能播。采集站常把高码率片源放在小机房，清单 1 秒内
+# 返回、分片却只有几十 KB/s，播放器等不到数据就报「无法解析视频资源」。竞速若只
+# 比清单响应时间，会稳定选中这类「假快线」（实测某部动漫的默认线：片源 700KB/s，
+# 实际下载 66KB/s，分片 30 秒下不完）。决胜阶段实测首片下载速度，按真实吞吐排序。
+_TP_BUDGET = 1.5            # 单条线路首片实测时间预算（秒）
+_TP_MAX_BYTES = 256 * 1024  # 单条线路最多读取的字节数
+_TP_MAX_CANDIDATES = 3      # 只实测延迟最优的前几条，控制起播开销
+
+
+async def _probe_throughput(cand: dict, request: Request,
+                            budget: float = _TP_BUDGET) -> float:
+    """下载该线路首个分片至多 budget 秒，返回实测 KB/s（拿不到数据返回 0）。"""
+    url = _self_url(cand.get("url", ""))
+    if not url:
+        return 0.0
+    headers = dict(cand.get("headers") or {"User-Agent": "Mozilla/5.0"})
+    try:
+        # 竞速阶段 _probe_latency 已抓过清单，直接复用，避免重复抓取拖慢起播
+        cached = cand.get("_pl")
+        if cached:
+            text, base = cached
+        else:
+            text, base = await asyncio.wait_for(
+                _fetch_playlist(request, url, headers, tries=1, timeout=6.0),
+                timeout=6.0)
+        if not text:
+            return 0.0
+        first = next((ln.strip() for ln in text.splitlines()
+                      if ln.strip() and not ln.lstrip().startswith("#")), "")
+        if not first:
+            return 0.0
+        seg = first if first.startswith("http") else urllib.parse.urljoin(base, first)
+        cli = ext_client(request)
+        req = cli.build_request(
+            "GET", seg,
+            headers={**headers, "Range": f"bytes=0-{_TP_MAX_BYTES - 1}"})
+        r = await asyncio.wait_for(
+            cli.send(req, stream=True, follow_redirects=True), timeout=6.0)
+        got, t0 = 0, time.time()
+        try:
+            if r.status_code >= 400:
+                return 0.0
+            async for chunk in r.aiter_bytes(65536):
+                got += len(chunk)
+                if got >= _TP_MAX_BYTES or time.time() - t0 >= budget:
+                    break
+        finally:
+            try:
+                await r.aclose()
+            except Exception:
+                pass
+        dt = max(0.05, min(time.time() - t0, budget))
+        return got / 1024.0 / dt
+    except Exception:
+        return 0.0
+
+
 async def _race_fastest(picked: dict, request: Request) -> dict | None:
-    """并行竞速探测候选线路，选首字节延迟最低者（默认高质量线给小幅领先优势）。
+    """并行竞速探测候选线路：先比清单响应延迟，再对前几条实测首片吞吐决胜。
 
     返回胜出的已解析目标（HLS 胜者会再构建播放列表缓存）；全部失败返回 None。"""
     cands = _race_candidates(picked)
@@ -3511,16 +3570,44 @@ async def _race_fastest(picked: dict, request: Request) -> dict | None:
         c, lat = item
         return lat - (prefer if default and c["line"] == default else 0.0)
 
-    winner, wlat = min(ok, key=eff)
+    ok.sort(key=eff)
+    winner, wlat = ok[0]
+    wspeed = 0.0
+    # 决胜阶段：对延迟最优的几条 HLS 线路实测首片吞吐，取实测最快者。
+    # 只有一条候选、或全是直链（mp4/网盘）时不做，省掉起播额外开销。
+    def _is_hls(c: dict) -> bool:
+        return bool(c.get("m3u8")) or bool(
+            re.search(r"\.m3u8(\?|$)", str(c.get("url") or ""), re.I))
+
+    top = [x for x in ok[:_TP_MAX_CANDIDATES] if _is_hls(x[0])]
+    # 只在「延迟最优者本身就是 HLS」时才用吞吐改写结果：mp4/网盘直链是原画，
+    # 不该因为采集站 HLS 测速更快就被换掉。
+    if len(ok) > 1 and len(top) > 1 and _is_hls(winner):
+        speeds = await asyncio.gather(
+            *[_probe_throughput(c, request) for c, _ in top],
+            return_exceptions=True)
+        measured = {id(c): float(sp) for (c, _lat), sp in zip(top, speeds)
+                    if isinstance(sp, (int, float))}
+        if measured:
+            cur_speed = measured.get(id(winner), 0.0)
+            best = max(measured, key=lambda k: measured[k])
+            best_c = next(c for c, _ in top if id(c) == best)
+            wspeed = cur_speed
+            if measured[best] > cur_speed + 1.0:   # 1KB/s 容差，避免抖动来回换线
+                _log.info("线路竞速: 《%s》%s %s 实测 %.0fKB/s 太慢，改用 %s(%.0fKB/s)",
+                          picked.get("title"), picked.get("ep_title") or "",
+                          winner.get("line"), cur_speed,
+                          best_c.get("line"), measured[best])
+                winner, wspeed = best_c, measured[best]
     _remember_fast(picked, winner["line"])
     # 胜者若是 HLS，构建改写后的播放列表供 main 直接取用
-    if re.search(r"\.m3u8(\?|$)", winner.get("url", "").split("?", 1)[0], re.I):
+    if _is_hls(winner):
         mg = getattr(request.state, "_play_mg", "") if hasattr(request, "state") else ""
         if mg:
             await _get_playlist_cached(mg, winner, request)
-    _log.info("线路竞速: 《%s》%s 选中 %s (%.2fs, %d 候选)",
+    _log.info("线路竞速: 《%s》%s 选中 %s (%.2fs, %d 候选, %.0fKB/s)",
               picked.get("title"), picked.get("ep_title") or "",
-              winner.get("line"), wlat, len(ok))
+              winner.get("line"), wlat, len(ok), wspeed)
     return winner
 
 
